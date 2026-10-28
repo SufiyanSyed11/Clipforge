@@ -42,7 +42,7 @@ clipforge-golden = "clipforge.tools.golden:main"
 include = ["clipforge*"]
 
 [tool.setuptools.package-data]
-clipforge = ["prompts/*.md"]
+clipforge = ["prompts/*.md", "assets/*.onnx", "assets/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

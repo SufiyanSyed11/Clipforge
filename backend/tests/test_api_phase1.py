@@ -80,7 +80,7 @@ def test_upload_to_ranked_clips_with_one_click_host(tmp_path, fake_models):
     assert p["media_info"]["fps"] == 30
     assert p["host_suggestion"]["speaker"] == "S1"
     assert {s["speaker"] for s in p["speakers"]["stats"]} == {"S1", "S2"}
-    job = p["jobs"][0]
+    job = next(j for j in p["jobs"] if j["kind"] == "process_project")
     steps = {q["step"]: q for q in job["qa"]}
     assert steps["ingest"]["passed"]
     # The test-double transcript is never reported as a real result.

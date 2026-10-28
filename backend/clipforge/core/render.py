@@ -281,7 +281,8 @@ def render(
     out_w, out_h, fps = spec.width, spec.height, spec.fps
     total = spec.frame_count
     timeline = build_timeline(spec)
-    sw, sh = video_size(spec.source_path)
+    sw, sh = (out_w, out_h) if spec.audio_only else video_size(spec.source_path)
+    background = np.full((out_h, out_w, 3), (24, 18, 14), np.uint8)
     default_cam = CameraKey(
         out_time=0.0, cx=sw / 2, cy=sh / 2, crop_w=base_crop_w(sw, sh, out_w, out_h)
     )
@@ -330,9 +331,21 @@ def render(
             n = f1 - f0
             if n <= 0:
                 continue
-            dec = _Decoder(seg.path, seg.src_start, n / fps, spec.frame_rate_mode == "interpolate")
+            plain = seg.kind == "main" and spec.audio_only
+            dec = (
+                None
+                if plain
+                else _Decoder(
+                    seg.path, seg.src_start, n / fps, spec.frame_rate_mode == "interpolate"
+                )
+            )
             try:
                 for k in range(n):
+                    if dec is None:  # audio-only episode: plain background behind captions
+                        assert enc.stdin is not None
+                        enc.stdin.write(background.tobytes())
+                        written += 1
+                        continue
                     frame = dec.read()
                     t = (f0 + k) / fps
                     if seg.kind == "broll":
@@ -352,7 +365,8 @@ def render(
                         if written % 300 == 0:
                             log(f"Rendered {written}/{total} frames", written / total)
             finally:
-                dec.close()
+                if dec is not None:
+                    dec.close()
         assert enc.stdin is not None
         enc.stdin.close()
         err = enc.stderr.read().decode("utf-8", "replace") if enc.stderr else ""

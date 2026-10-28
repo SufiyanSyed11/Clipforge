@@ -35,6 +35,16 @@ class AppConfig(BaseModel):
     frame_rate_mode: Literal["repeat", "interpolate"] = "repeat"
     # One consistent colour grade for every clip.
     grade: Literal["none", "clean", "warm", "cool"] = "clean"
+    caption_font: str = "Arial Black"
+    caption_uppercase: bool = True
+    caption_accent: str = "#FFD400"  # emphasis colour for key words
+    # Royalty-free music bed (uploaded in Settings); None = no music.
+    bgm_path: str | None = None
+    # SFX only on motivated transitions (B-roll cutaways); off = clean cuts, no SFX.
+    sfx_path: str | None = None
+    sfx_on_transitions: bool = False
+    # Download SFace (38 MB) once to recognise the host across camera angles.
+    face_recognition: bool = True
     # Owner decision 7: spec defaults, editable; enforced on every B-roll pick (Phase 4).
     broll_banned_content: list[str] = Field(
         default_factory=lambda: ["women", "any person who is not clearly identified"]
@@ -75,6 +85,16 @@ def save_config(cfg: AppConfig) -> AppConfig:
         raise ValueError("Output must be vertical 9:16 with even dimensions (e.g. 1080x1920)")
     if cfg.style.fps not in (30, 60):
         raise ValueError("fps must be 30 or 60")
+    # Uploaded files only: settings can't point the renderer at arbitrary files on disk.
+    from pathlib import Path
+
+    from clipforge.settings import get_settings
+
+    branding = (get_settings().data_dir / "branding").resolve()
+    for field in ("logo_path", "bgm_path", "sfx_path"):
+        value = getattr(cfg, field)
+        if value and branding not in Path(value).resolve().parents:
+            raise ValueError(f"{field} must be a file uploaded in Settings")
     with session_scope() as s:
         row = s.get(AppSetting, _KEY)
         if row:

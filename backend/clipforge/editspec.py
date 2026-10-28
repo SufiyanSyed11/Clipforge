@@ -133,6 +133,7 @@ class EditSpec(BaseModel):
     width: int = 1080
     height: int = 1920
     frame_rate_mode: Literal["repeat", "interpolate"] = "repeat"
+    audio_only: bool = False  # source has no video: main footage is a plain background
     pieces: list[Piece]
     cuts: list[Cut] = Field(default_factory=list)
     joins: list[Join] = Field(default_factory=list)

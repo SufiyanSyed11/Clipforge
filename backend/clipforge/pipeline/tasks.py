@@ -182,6 +182,10 @@ def process_project(ctx: JobContext) -> TaskResult:
         _update(pid, status="failed")
         raise
     _update(pid, status="awaiting_host")
+    with session_scope() as s:
+        has_video = bool((s.get(Project, pid).media_info or {}).get("has_video"))
+    if has_video:
+        queue.enqueue("analyze_video", {}, project_id=pid)
     ctx.log("Waiting for the host to be confirmed in the UI", progress=1.0)
     return TaskResult(
         result={"words": len(t.words), "segments": len(t.segments), "duration": t.duration},

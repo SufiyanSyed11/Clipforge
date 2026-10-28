@@ -12,12 +12,14 @@ import json
 from pathlib import Path
 
 import numpy as np
+from sqlalchemy import select
 
 from clipforge.app_settings import AppConfig, load_config
-from clipforge.core import ingest, verify
+from clipforge.core import captions, faces, framing, ingest, verify
 from clipforge.core.audio import load_wav48, write_wav
 from clipforge.core.cut import CutConfig, CutEngine, CutError
-from clipforge.core.render import RenderCancelled, RenderError, render
+from clipforge.core.mix import MixError, mix
+from clipforge.core.render import RenderCancelled, RenderError, render, video_size
 from clipforge.core.voice import assemble_voice
 from clipforge.db import Clip, Project, session_scope, utcnow
 from clipforge.editspec import EditSpec
@@ -44,6 +46,85 @@ def audio48_path(project_id: int, media: Path) -> Path:
 @functools.lru_cache(maxsize=2)
 def _loaded_audio(path: str, mtime: float) -> np.ndarray:
     return load_wav48(Path(path))
+
+
+def analysis_path(project_id: int) -> Path:
+    return get_storage().project_dir(project_id) / "faces.json"
+
+
+@functools.lru_cache(maxsize=2)
+def _loaded_analysis(path: str, mtime: float) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def load_analysis(project_id: int) -> dict | None:
+    p = analysis_path(project_id)
+    return _loaded_analysis(str(p), p.stat().st_mtime) if p.exists() else None
+
+
+@task("analyze_video")
+def analyze_video(ctx: JobContext) -> TaskResult:
+    """Faces, shots and lip movement over the whole episode (once per project)."""
+    with session_scope() as s:
+        project = s.get(Project, ctx.project_id)
+    if not project or not project.media_path:
+        raise TaskError("No media to analyse")
+    if not (project.media_info or {}).get("has_video"):
+        return TaskResult(result={"skipped": "audio only"})
+    out = analysis_path(project.id)
+    if out.exists():
+        ctx.log("Face analysis already done")
+        return TaskResult(result={"cached": True})
+    cfg = load_config()
+    sface = None
+    if cfg.face_recognition and not get_settings().fake_models:
+        sface = faces.ensure_sface(get_settings().data_dir / "models")
+        ctx.log(
+            "Face recognition model ready"
+            if sface
+            else "Face recognition model unavailable: identities will follow the speakers"
+        )
+    detector = faces.YuNetDetector(sface)
+    sw, _ = video_size(project.media_path)
+    ctx.log("Analysing faces and shots (5 fps)")
+    try:
+        result = faces.analyze_samples(
+            faces.decode_samples(project.media_path),
+            detector,
+            scale_to_source=sw / faces.ANALYSIS_WIDTH,
+            log=lambda m: ctx.log(m),
+            cancelled=ctx.cancelled,
+        )
+    except InterruptedError:
+        raise TaskCancelled() from None
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text(json.dumps(result), encoding="utf-8")
+    tmp.replace(out)
+    n_faces = sum(len(x["faces"]) for x in result["samples"])
+    qa = QAReport(step="face-analysis")
+    qa.check(
+        "faces found",
+        n_faces > 0,
+        f"{n_faces} detections in {len(result['samples'])} samples, {result['shots']} shot(s)",
+        severity="warn",
+    )
+    qa.check(
+        "face recognition across shots",
+        sface is not None,
+        "SFace" if sface else "not available: host found by lip movement only",
+        severity="warn",
+    )
+    return TaskResult(result={"samples": len(result["samples"])}, qa=[qa])
+
+
+def used_host_shots(project_id: int, clip_id: int) -> set[str]:
+    with session_scope() as s:
+        rows = s.scalars(select(Clip).where(Clip.project_id == project_id, Clip.id != clip_id))
+        return {
+            (c.spec or {}).get("host_insert", {}).get("shot_id")
+            for c in rows
+            if (c.spec or {}).get("host_insert")
+        } - {None}
 
 
 def cut_config(cfg: AppConfig) -> CutConfig:
@@ -101,7 +182,37 @@ def plan_spec(
     spec.grade = cfg.grade
     spec.logo_path = cfg.logo_path
     spec.host_insert_enabled = bool(edits.get("host_insert", True))
-    return spec, [res.qa]
+    spec.audio_only = not (project.media_info or {}).get("has_video", True)
+    qa = [res.qa]
+
+    # Captions: corrected words, emphasis, censoring.
+    spec.captions, cap_qa = captions.prepare_captions(
+        spec, edits.get("captions") or {}, picked.plan.hook, picked.plan.payoff
+    )
+    qa.append(cap_qa)
+
+    # Framing and the host-reaction insert.
+    if not spec.audio_only:
+        analysis = load_analysis(project.id)
+        ident = faces.identify(analysis, transcript, project.host_speaker) if analysis else None
+        sw, sh = video_size(project.media_path)
+        spec.camera, cam_qa = framing.plan_camera(spec, analysis, ident, transcript, sw, sh)
+        qa.append(cam_qa)
+        avoid = [(b.out_start, b.out_end) for b in spec.broll if b.status == "filled"]
+        insert, ins_qa = framing.find_host_insert(
+            spec,
+            analysis,
+            ident,
+            transcript,
+            project.host_speaker,
+            used_host_shots(project.id, clip.id),
+            avoid,
+            sw,
+            sh,
+        )
+        spec.host_insert = insert
+        qa.append(ins_qa)
+    return spec, qa
 
 
 @task("build_clip")
@@ -136,12 +247,39 @@ def build_clip(ctx: JobContext) -> TaskResult:
         qa.append(verify.verify_voice(voice, spec, transcriber, transcriber_is_real=real))
         ctx.check_cancelled()
 
-        audio_for_render = voice_path
+        ctx.log("Mixing: voice -14 LUFS, music 19 dB under (ducked), limiter -1 dB")
+        mixed = d / "mix.wav"
+        sfx_times = (
+            [b.out_start for b in spec.broll if b.status == "filled"]
+            if cfg.sfx_on_transitions
+            else None
+        )
+        qa.append(
+            mix(
+                voice_path,
+                mixed,
+                bgm=Path(cfg.bgm_path) if cfg.bgm_path else None,
+                sfx=Path(cfg.sfx_path) if cfg.sfx_path else None,
+                sfx_times=sfx_times,
+                duration=spec.duration,
+                workdir=d / "mix",
+            )
+        )
+        accent = cfg.caption_accent.lstrip("#")
+        ass = captions.write_ass(
+            spec,
+            d / "captions.ass",
+            font=cfg.caption_font,
+            uppercase=cfg.caption_uppercase,
+            accent_bgr=accent[4:6] + accent[2:4] + accent[0:2],
+        )
+        (d / "captions.srt").write_text(captions.srt_document(spec), encoding="utf-8")
         ctx.log(f"Rendering {spec.duration:.1f} s at {spec.width}x{spec.height} {spec.fps} fps")
         out = render(
             spec,
-            audio_for_render,
+            mixed,
             d / "render.mp4",
+            ass_path=ass,
             encoder=get_settings().render_encoder,
             log=lambda m, p: ctx.log(m, progress=p),
             cancelled=ctx.cancelled,
@@ -154,7 +292,7 @@ def build_clip(ctx: JobContext) -> TaskResult:
     except (RenderCancelled, TaskCancelled):
         _set(clip_id, status="picked", error="Build cancelled")
         raise TaskCancelled() from None
-    except RenderError as e:
+    except (RenderError, MixError) as e:
         _set(clip_id, status="failed", error=str(e), qa=[r.to_dict() for r in qa])
         raise TaskError(str(e), qa) from e
 

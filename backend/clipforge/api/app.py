@@ -6,9 +6,10 @@ import json
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -139,6 +140,47 @@ def create_app() -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    BRANDING = {
+        "logo": ({".png", ".jpg", ".jpeg", ".webp"}, 5 * 1024 * 1024, "logo_path"),
+        "music": ({".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}, 50 * 1024 * 1024, "bgm_path"),
+        "sfx": ({".mp3", ".wav", ".m4a", ".ogg"}, 5 * 1024 * 1024, "sfx_path"),
+    }
+
+    @app.post("/api/settings/{kind}")
+    def upload_branding(kind: str, file: UploadFile = File(...)) -> dict[str, Any]:
+        """Upload the logo, the royalty-free music bed or the transition SFX."""
+        if kind not in BRANDING:
+            raise HTTPException(404, "Unknown upload")
+        allowed, limit, field = BRANDING[kind]
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in allowed:
+            raise HTTPException(422, f"Use one of: {', '.join(sorted(allowed))}")
+        dest_dir = settings.data_dir / "branding"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{kind}{suffix}"
+        tmp = dest.with_suffix(".part")
+        size = 0
+        with tmp.open("wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > limit:
+                    out.close()
+                    tmp.unlink(missing_ok=True)
+                    raise HTTPException(413, f"File too large (max {limit // 1024 // 1024} MB)")
+                out.write(chunk)
+        tmp.replace(dest)
+        cfg = load_config()
+        setattr(cfg, field, str(dest))
+        return save_config(cfg).model_dump()
+
+    @app.delete("/api/settings/{kind}")
+    def remove_branding(kind: str) -> dict[str, Any]:
+        if kind not in BRANDING:
+            raise HTTPException(404, "Unknown upload")
+        cfg = load_config()
+        setattr(cfg, BRANDING[kind][2], None)
+        return save_config(cfg).model_dump()
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: int) -> dict[str, Any]:

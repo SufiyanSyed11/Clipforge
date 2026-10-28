@@ -41,7 +41,7 @@ class CutConfig:
     min_gap: float = 0.14  # shortest silent run accepted for a cut
     guard: float = 0.06  # silence kept on each side of every cut
     search_pad: float = 0.55  # allowance for whisper timing error left after drift correction
-    extend_max: float = 3.0  # how far to look for the next natural pause
+    extend_max: float = 6.0  # how far to look for the next natural pause
     lead_in: float = 0.20  # most silence allowed before the first word (hook lands fast)
     tail_out: float = 0.40  # most silence after the last word (natural decay, < 0.45 s)
     max_pause: float = 0.45  # longer pauses inside a clip get shortened
