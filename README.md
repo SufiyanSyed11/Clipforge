@@ -10,7 +10,8 @@ ready-to-post vertical short clips.
 
 ## Run it on Windows
 
-Prerequisites: Python 3.11+, Node 20+, ffmpeg on PATH (`winget install Gyan.FFmpeg`).
+Prerequisites: Git, Python 3.11-3.13 (3.12 recommended: `winget install Python.Python.3.12`),
+Node 20+ (`winget install OpenJS.NodeJS.LTS`), ffmpeg on PATH (`winget install Gyan.FFmpeg`).
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # once
