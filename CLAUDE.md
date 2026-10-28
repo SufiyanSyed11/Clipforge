@@ -8,6 +8,18 @@ manager: judge every output like a viewer and like an editor.
 Source of truth for the full spec: `docs/SPEC.md`. Architecture and phased plan:
 `docs/ARCHITECTURE.md`. This file holds the rules that must never be forgotten.
 
+## Owner decisions (see docs/ARCHITECTURE.md section 0)
+
+- Local Windows PC first, Docker optional. Pick GPU-dependent components only from what
+  `clipforge-check` reports.
+- Host is auto-suggested, owner confirms/changes with one click per project.
+- 30 fps sources go to 60 fps by frame repetition; frame interpolation only if enabled.
+- Brand tag default `#DoubleCoverage`; logo uploaded in Settings.
+- Never invent test results. The quality bar is passed only after the owner's 3 golden
+  episodes actually ran. A phase is complete only when its acceptance criteria pass.
+- B-roll restrictions are Settings with the spec defaults, applied to every selection and
+  re-verified before export.
+
 ## Working rules
 
 - Plan before coding. Build phase by phase. After every phase: run it on a real sample
@@ -25,7 +37,7 @@ Source of truth for the full spec: `docs/SPEC.md`. Architecture and phased plan:
 
 ## Hard style rules (default preset, editable in the UI)
 
-- 1080x1920, 60 fps. Full-screen vertical, face-tracked camera + B-roll cutaways.
+- 1080x1920, 60 fps (frame repetition from 30 fps by default). Full-screen vertical, face-tracked camera + B-roll cutaways.
 - Clip length 18-30 s, **hard max 30 s**. Hook inside the first second. End on the punchline so
   it loops. A clip is a complete mini-story (opening -> hook -> context -> build -> payoff).
 - One-word-at-a-time centered bold captions, emphasis on key words, timed to corrected words.
@@ -44,8 +56,8 @@ Source of truth for the full spec: `docs/SPEC.md`. Architecture and phased plan:
   fades at joins.
 - Pause removal only in true silence, strict RMS threshold + safety margin. The last word must
   finish and decay naturally.
-- Profanity: choose a different seam, or auto-bleep (mute + 1 kHz tone) and censor the caption
-  (`f**k`). This is a setting.
+- Profanity: prefer a different seam. Auto-bleep (mute + 1 kHz tone, censored caption `f**k`)
+  only when no suitable alternative exists. Never damage speech to avoid a word.
 - Ingest downloads the full episode as **one muxed file**. Never join separately downloaded
   audio and video (causes drift).
 
