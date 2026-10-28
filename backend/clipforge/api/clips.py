@@ -211,6 +211,84 @@ def download_export(clip_id: int) -> FileResponse:
     return FileResponse(p, media_type="application/zip", filename=p.name)
 
 
+class ScheduleIn(BaseModel):
+    publish_at: str  # ISO 8601 with timezone
+
+
+@router.post("/{clip_id}/youtube")
+def schedule_youtube(clip_id: int, body: ScheduleIn) -> dict[str, Any]:
+    """Upload to YouTube as private with a scheduled publish time (never public right away)."""
+    from datetime import UTC, datetime, timedelta
+
+    from clipforge.core import youtube
+
+    try:
+        when = datetime.fromisoformat(body.publish_at.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise HTTPException(422, "publish_at must be an ISO date-time") from e
+    if when.tzinfo is None:
+        raise HTTPException(422, "publish_at needs a timezone")
+    if when < datetime.now(UTC) + timedelta(minutes=15):
+        raise HTTPException(422, "Schedule at least 15 minutes ahead")
+    if not youtube.status(get_settings().data_dir)["can_upload"]:
+        raise HTTPException(422, "Connect YouTube with upload permission first (Learning page)")
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        if not c.verified or not c.copy_pack:
+            raise HTTPException(422, "Only verified clips with a copy pack can be uploaded")
+        if _active_job(s, clip_id, ("youtube_upload",)):
+            raise HTTPException(409, "Already uploading")
+        project_id = c.project_id
+    job_id = queue.enqueue(
+        "youtube_upload",
+        {"clip_id": clip_id, "publish_at": when.isoformat()},
+        project_id=project_id,
+    )
+    with session_scope() as s:
+        return job_dict(s.get(Job, job_id))
+
+
+@router.get("/{clip_id}/posting")
+def posting_plan(clip_id: int) -> dict[str, Any]:
+    """Suggested posting time (from channel data when available) and upload state."""
+    from clipforge.core import youtube
+    from clipforge.core.learn import load_insights
+    from clipforge.core.posting import suggest_time
+
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        posts = c.posts or []
+    when, why = suggest_time(load_insights())
+    return {
+        "suggested_at": when.isoformat(),
+        "why": why,
+        "posts": posts,
+        "youtube": youtube.status(get_settings().data_dir),
+    }
+
+
+@router.get("/{clip_id}/post.ics")
+def calendar(clip_id: int):
+    """A calendar entry for the suggested posting time."""
+    from fastapi.responses import Response
+
+    from clipforge.core.copywriter import CopyPack
+    from clipforge.core.learn import load_insights
+    from clipforge.core.posting import ics, suggest_time
+
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        if not c.copy_pack:
+            raise HTTPException(404, "No copy pack yet")
+        pack = CopyPack.model_validate(c.copy_pack)
+    when, _why = suggest_time(load_insights())
+    return Response(
+        ics(pack.title, when, pack.x_post, f"clip-{clip_id}"),
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'attachment; filename="clip-{clip_id}.ics"'},
+    )
+
+
 @router.get("/{clip_id}/video")
 def video(clip_id: int) -> FileResponse:
     with session_scope() as s:

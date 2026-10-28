@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
-from clipforge.api.app import create_app
 from clipforge.jobs.worker import run_one
 from clipforge.settings import get_settings
+from tests.helpers import api_client
 from tests.test_broll import _video
 
 
@@ -35,7 +34,7 @@ def test_broll_fills_renders_and_review_actions(tmp_path, fake_models):
             json.dumps({"title": "stadium crowd", "tags": ["stadium"]})
         )
 
-    c = TestClient(create_app())
+    c = api_client()
     cfg = c.get("/api/settings").json()
     cfg["style"]["width"], cfg["style"]["height"] = 360, 640
     c.put("/api/settings", json=cfg)
@@ -84,7 +83,7 @@ def test_broll_fills_renders_and_review_actions(tmp_path, fake_models):
 def test_permitted_sources_need_rights_and_never_the_podcast(tmp_path):
     from clipforge.db import Project, session_scope
 
-    c = TestClient(create_app())
+    c = api_client()
     with session_scope() as s:
         p = Project(
             name="x", source_type="url", source="https://youtu.be/pod", rights_confirmed=True

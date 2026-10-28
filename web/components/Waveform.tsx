@@ -55,6 +55,8 @@ export default function Waveform({
         g.fillRect(x(tt) - 2, 0, 4, H);
       }
     });
+    // x() only depends on `wave`, which is listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wave, segments, drag]);
 
   function hit(px: number) {

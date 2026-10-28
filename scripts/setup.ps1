@@ -1,4 +1,4 @@
-# One-time setup on Windows (PowerShell). Needs Python 3.11-3.13, Node 20+, ffmpeg on PATH.
+# One-time setup on Windows (PowerShell). Needs Python 3.11-3.13, Node 20.9+, ffmpeg on PATH.
 # Run from the repo root:  powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -14,6 +14,12 @@ foreach ($tool in "py", "node", "npm", "ffmpeg", "ffprobe") {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
         throw "$tool was not found on PATH. See README.md (Run it on Windows) for prerequisites."
     }
+}
+
+# The web app (Next.js 16) needs Node 20.9 or newer.
+$nodeVer = [version]((& node --version).TrimStart("v"))
+if ($nodeVer -lt [version]"20.9.0") {
+    throw "Node $nodeVer is too old; 20.9+ is required. Update: winget upgrade OpenJS.NodeJS.LTS"
 }
 
 # faster-whisper's engine ships Windows wheels for these versions; prefer the most tested.

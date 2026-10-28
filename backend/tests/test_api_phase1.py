@@ -9,9 +9,9 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from clipforge.api.app import create_app
 from clipforge.jobs.worker import run_one
 from clipforge.settings import get_settings
+from tests.helpers import api_client
 from tests.media import make_video
 
 
@@ -32,7 +32,7 @@ def _upload(c: TestClient, path, **form):
 
 
 def test_project_without_rights_is_refused_and_nothing_is_queued(tmp_path):
-    c = TestClient(create_app())
+    c = api_client()
     video = make_video(tmp_path / "ep.mp4", seconds=3)
     r = _upload(c, video, rights_confirmed="false")
     assert r.status_code == 422
@@ -44,7 +44,7 @@ def test_project_without_rights_is_refused_and_nothing_is_queued(tmp_path):
 
 
 def test_project_input_validation(tmp_path):
-    c = TestClient(create_app())
+    c = api_client()
     assert (
         c.post("/api/projects", data={"rights_confirmed": "true"}).status_code == 422
     )  # neither url nor file
@@ -67,7 +67,7 @@ def _small_output(c: TestClient) -> None:
 def test_upload_to_ranked_clips_with_one_click_host(tmp_path, fake_models):
     from clipforge.testing.synth import write_fixture_video
 
-    c = TestClient(create_app())
+    c = api_client()
     _small_output(c)
     video = write_fixture_video(tmp_path / "ep.mp4", seconds=75)
     r = _upload(c, video, rights_confirmed="true", name="Test episode", clip_count="3")
@@ -132,7 +132,7 @@ def test_upload_to_ranked_clips_with_one_click_host(tmp_path, fake_models):
 def test_trim_edit_snaps_to_silence_and_rebuilds(tmp_path, fake_models):
     from clipforge.testing.synth import write_fixture_video
 
-    c = TestClient(create_app())
+    c = api_client()
     _small_output(c)
     video = write_fixture_video(tmp_path / "ep.mp4", seconds=60)
     pid = _upload(c, video, rights_confirmed="true", clip_count="1").json()["id"]
@@ -163,7 +163,7 @@ def test_trim_edit_snaps_to_silence_and_rebuilds(tmp_path, fake_models):
 def test_cancel_a_queued_build(tmp_path, fake_models):
     from clipforge.testing.synth import write_fixture_video
 
-    c = TestClient(create_app())
+    c = api_client()
     _small_output(c)
     video = write_fixture_video(tmp_path / "ep.mp4", seconds=60)
     pid = _upload(c, video, rights_confirmed="true", clip_count="1").json()["id"]
@@ -187,7 +187,7 @@ def test_cancel_a_queued_build(tmp_path, fake_models):
 
 
 def test_failed_ingest_marks_project_failed(tmp_path, fake_models):
-    c = TestClient(create_app())
+    c = api_client()
     bad = make_video(tmp_path / "drift.mp4", seconds=6, audio_short_by=1.5)
     pid = _upload(c, bad, rights_confirmed="true").json()["id"]
     _drain()

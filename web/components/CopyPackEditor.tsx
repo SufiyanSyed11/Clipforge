@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "@/lib/api";
 
 type Pack = {
@@ -40,8 +40,13 @@ export default function CopyPackEditor({
   onSaved: () => void;
 }) {
   const [draft, setDraft] = useState<Pack | null>(pack);
+  const [shown, setShown] = useState<Pack | null>(pack);
   const [msg, setMsg] = useState<string | null>(null);
-  useEffect(() => setDraft(pack), [pack]);
+  if (pack !== shown) {
+    // A new pack from the server (regenerated or saved) replaces the draft.
+    setShown(pack);
+    setDraft(pack);
+  }
 
   async function save() {
     if (!draft) return;

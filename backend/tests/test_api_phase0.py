@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from clipforge.api.app import create_app
 from clipforge.jobs.worker import run_one
+from tests.helpers import api_client
 
 
 def client() -> TestClient:
-    return TestClient(create_app())
+    return api_client()
 
 
 def test_health():

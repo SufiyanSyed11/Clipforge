@@ -73,5 +73,6 @@ def registered_kinds() -> list[str]:
 
 def load_builtin_tasks() -> None:
     # Importing registers the tasks.
+    from clipforge.api import learning  # noqa: F401  (refresh_learning task)
     from clipforge.jobs import builtin  # noqa: F401
     from clipforge.pipeline import clip_tasks, tasks  # noqa: F401

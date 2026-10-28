@@ -143,6 +143,14 @@ def write_pack(
     (tmp / "copy.md").write_text(copy_markdown(copy), encoding="utf-8")
     (tmp / "copy.json").write_text(copy.model_dump_json(indent=2), encoding="utf-8")
     (tmp / "qa.json").write_text(json.dumps(qa, indent=2), encoding="utf-8")
+    from clipforge.core.learn import load_insights
+    from clipforge.core.posting import checklist, ics, suggest_time
+
+    when, why = suggest_time(load_insights())
+    (tmp / "posting.md").write_text(checklist(copy, when, why), encoding="utf-8")
+    (tmp / "post.ics").write_text(
+        ics(copy.title, when, copy.x_post, f"{slug(project_name)}-{rank}"), encoding="utf-8"
+    )
     manifest = {
         "clipforge_version": __version__,
         "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),

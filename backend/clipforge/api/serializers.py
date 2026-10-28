@@ -71,6 +71,7 @@ def clip_dict(c: Clip, full: bool = False) -> dict[str, Any]:
         "has_export": bool(c.export_path),
         "copy_pack": c.copy_pack,
         "edits": c.edits or {},
+        "posts": c.posts or [],
         "updated_at": _iso(c.updated_at),
     }
     if full:

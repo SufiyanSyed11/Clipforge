@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from clipforge.app_settings import AppConfig, load_config
 from clipforge.broll.engine import BrollContext
-from clipforge.core import captions, faces, framing, ingest, verify
+from clipforge.core import captions, disk, faces, framing, ingest, verify
 from clipforge.core.audio import load_wav48, write_wav
 from clipforge.core.cut import CutConfig, CutEngine, CutError
 from clipforge.core.mix import MixError, mix
@@ -143,7 +143,7 @@ def cut_config(cfg: AppConfig) -> CutConfig:
     )
 
 
-def make_transcriber():
+def make_transcriber(ctx: JobContext | None = None):
     """(transcriber, is_real) for the verification gate's re-transcription."""
     settings = get_settings()
     if settings.fake_models:
@@ -151,9 +151,13 @@ def make_transcriber():
 
         return fake_asr.heard_words, False
     from clipforge.core.transcribe import resolve_config
+    from clipforge.pipeline.tasks import free_llm_vram
     from clipforge.tools.check_env import load_report
 
     cfg = resolve_config(settings, load_report())
+    if ctx is not None and cfg.device == "cuda":
+        # B-roll queries/vision just ran on Ollama; on a 6 GB card it must leave room.
+        free_llm_vram(ctx)
     return verify.whisper_transcriber(cfg), True
 
 
@@ -313,9 +317,15 @@ def build_clip(ctx: JobContext) -> TaskResult:
         project = s.get(Project, clip.project_id)
     if not project.media_path or not project.transcript_path:
         raise TaskError("The project has no media/transcript yet")
-    _set(clip_id, status="building", error=None)
     cfg = load_config()
     d = clip_dir(project.id, clip_id)
+    try:
+        # A 30 s 1080x1920 60 fps render plus WAV stems stays well under 1 GB.
+        disk.require_free(d, get_settings().min_free_gb, 1.0, "rendering")
+    except disk.LowDiskSpace as e:
+        _set(clip_id, status="failed", error=str(e))
+        raise TaskError(str(e)) from e
+    _set(clip_id, status="building", error=None)
     qa: list[QAReport] = []
     try:
         transcript = Transcript.model_validate_json(
@@ -336,9 +346,17 @@ def build_clip(ctx: JobContext) -> TaskResult:
 
         voice = assemble_voice(audio48, spec)
         voice_path = write_wav(d / "voice.wav", voice)
-        transcriber, real = make_transcriber()
+        transcriber, real = make_transcriber(ctx)
         ctx.log("Verification: re-transcribing the cut audio")
-        qa.append(verify.verify_voice(voice, spec, transcriber, transcriber_is_real=real))
+        qa.append(
+            verify.verify_voice(
+                voice,
+                spec,
+                transcriber,
+                transcriber_is_real=real,
+                profanity_allowed=cfg.profanity_mode == "allow",
+            )
+        )
         ctx.check_cancelled()
 
         ctx.log("Mixing: voice -14 LUFS, music 19 dB under (ducked), limiter -1 dB")
@@ -506,3 +524,41 @@ def export_clip(ctx: JobContext) -> TaskResult:
         result={"folder": str(folder), "zip": str(zpath), "unverified_test": unverified_test},
         qa=[reverify],
     )
+
+
+@task("youtube_upload")
+def youtube_upload(ctx: JobContext) -> TaskResult:
+    """Upload a verified clip to YouTube as PRIVATE with a scheduled publish time."""
+    from datetime import datetime
+
+    from clipforge.api.learning import oauth
+    from clipforge.core import copywriter, youtube
+
+    clip_id = int(ctx.payload["clip_id"])
+    publish_at = datetime.fromisoformat(ctx.payload["publish_at"])
+    clip, _project = _clip_and_project(clip_id)
+    if not clip.verified or not clip.render_path or not clip.copy_pack:
+        raise TaskError("Only verified clips with a copy pack can be uploaded")
+    pack = copywriter.CopyPack.model_validate(clip.copy_pack)
+    yt = youtube.YouTube(oauth(), get_settings().data_dir)
+    ctx.log(f"Uploading as private, scheduled for {publish_at.isoformat()}")
+    try:
+        vid = yt.upload_private_scheduled(
+            Path(clip.render_path),
+            pack.title,
+            pack.youtube_description,
+            pack.instagram_tags,
+            publish_at,
+        )
+    except youtube.YouTubeError as e:
+        raise TaskError(str(e)) from e
+    posts = list(clip.posts or []) + [
+        {
+            "platform": "youtube",
+            "video_id": vid,
+            "publish_at": publish_at.isoformat(),
+            "privacy": "private (scheduled)",
+        }
+    ]
+    _set(clip_id, posts=posts)
+    return TaskResult(result={"video_id": vid})

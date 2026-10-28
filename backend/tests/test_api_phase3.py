@@ -8,12 +8,11 @@ import json
 import cv2
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
 
-from clipforge.api.app import create_app
 from clipforge.core.audio import write_wav
 from clipforge.jobs.worker import run_one
 from clipforge.settings import get_settings
+from tests.helpers import api_client
 
 
 @pytest.fixture
@@ -28,7 +27,7 @@ def _drain():
 
 
 def test_branding_uploads_and_path_restriction(tmp_path):
-    c = TestClient(create_app())
+    c = api_client()
     png = cv2.imencode(".png", np.full((80, 200, 3), 255, np.uint8))[1].tobytes()
     r = c.post("/api/settings/logo", files={"file": ("logo.png", io.BytesIO(png), "image/png")})
     assert r.status_code == 200 and r.json()["logo_path"].endswith("logo.png")
@@ -43,7 +42,7 @@ def test_branding_uploads_and_path_restriction(tmp_path):
 def test_build_with_logo_music_and_captions(tmp_path, fake_models):
     from clipforge.testing.synth import write_fixture_video
 
-    c = TestClient(create_app())
+    c = api_client()
     cfg = c.get("/api/settings").json()
     cfg["style"]["width"], cfg["style"]["height"] = 360, 640
     assert c.put("/api/settings", json=cfg).status_code == 200

@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from clipforge.core.audio import Levels, rms_db, rms_trace
+from clipforge.core.pick import _is_profane
 from clipforge.editspec import EditSpec
 from clipforge.qa import QAReport
 
@@ -48,6 +49,7 @@ def verify_voice(
     transcriber: Transcriber | None,
     *,
     transcriber_is_real: bool = True,
+    profanity_allowed: bool = False,
 ) -> QAReport:
     qa = QAReport(step="verify")
     levels = _clip_levels(voice)
@@ -108,7 +110,8 @@ def verify_voice(
             at_seconds=0.0,
         )
         return qa
-    heard = [norm_word(w) for w in transcriber(voice, SR) if norm_word(w)]
+    heard_raw = [w for w in transcriber(voice, SR) if norm_word(w)]
+    heard = [norm_word(w) for w in heard_raw]
     want = [norm_word(w) for w in intended_text]
     sm = difflib.SequenceMatcher(a=want, b=heard, autojunk=False)
     matched = sum(b.size for b in sm.get_matching_blocks())
@@ -152,6 +155,20 @@ def verify_voice(
         not at_edges,
         "; ".join(f"{w!r} at {t:.2f} s" for w, t in at_edges) or "none",
         at_seconds=at_edges[0][1] if at_edges else None,
+    )
+    # Zero profanity leaks: bleeped words are muted, so a real model must not hear any.
+    leaks = [w for w in heard_raw if _is_profane(w)]
+    qa.check(
+        "no profanity audible in the cut",
+        not leaks or profanity_allowed,
+        (
+            f"heard: {', '.join(leaks[:5])}"
+            + (" (allowed by the profanity setting)" if profanity_allowed else "")
+            if leaks
+            else "none heard"
+        ),
+        severity="warn" if profanity_allowed else "error",
+        at_seconds=(cap_times.get(norm_word(leaks[0])) or [None])[0] if leaks else None,
     )
     if extra:
         qa.check(

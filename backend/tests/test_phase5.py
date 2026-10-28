@@ -7,13 +7,12 @@ import json
 import zipfile
 
 import pytest
-from fastapi.testclient import TestClient
 
-from clipforge.api.app import create_app
 from clipforge.core import copywriter, export
 from clipforge.jobs.worker import run_one
 from clipforge.qa import QAReport
 from clipforge.settings import get_settings
+from tests.helpers import api_client
 
 GOOD = {
     "title": 'He Said No To $2M: "You Can\'t Buy This Moment" 😮',
@@ -118,7 +117,7 @@ def _drain():
 def test_copy_edit_and_export_through_the_api(tmp_path, fake_models):
     from clipforge.testing.synth import write_fixture_video
 
-    c = TestClient(create_app())
+    c = api_client()
     cfg = c.get("/api/settings").json()
     cfg["style"]["width"], cfg["style"]["height"] = 360, 640
     c.put("/api/settings", json=cfg)
@@ -165,7 +164,7 @@ def test_copy_edit_and_export_through_the_api(tmp_path, fake_models):
 def test_export_is_blocked_outside_test_mode(tmp_path, fake_models, monkeypatch):
     from clipforge.testing.synth import write_fixture_video
 
-    c = TestClient(create_app())
+    c = api_client()
     cfg = c.get("/api/settings").json()
     cfg["style"]["width"], cfg["style"]["height"] = 360, 640
     c.put("/api/settings", json=cfg)

@@ -1,5 +1,6 @@
 "use client";
 
+import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import ClipCard from "@/components/ClipCard";
 import JobLog from "@/components/JobLog";
@@ -7,7 +8,8 @@ import JobsHistory from "@/components/JobsHistory";
 import QAChecklist from "@/components/QAChecklist";
 import { api, type Clip, type Project } from "@/lib/api";
 
-export default function ProjectPage({ params }: { params: { id: string } }) {
+export default function ProjectPage() {
+  const params = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +26,8 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
   }, [params.id]);
 
   useEffect(() => {
+    // Fetch on mount: state is only set after the request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 

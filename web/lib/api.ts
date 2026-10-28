@@ -35,12 +35,12 @@ export type JobEvent = {
 };
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  // X-ClipForge: the API refuses writes without it (blocks cross-site requests to localhost).
+  const base: Record<string, string> = { "X-ClipForge": "1" };
+  if (!(init?.body instanceof FormData)) base["Content-Type"] = "application/json";
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers:
-      init?.body instanceof FormData
-        ? init?.headers
-        : { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: { ...base, ...((init?.headers as Record<string, string>) ?? {}) },
     cache: "no-store",
   });
   if (!res.ok) {
@@ -117,6 +117,7 @@ export type Clip = {
     stitched: boolean;
     flags: string[];
     windows_are_approximate: boolean;
+    why_data?: string[];
   };
   qa: QAReport[];
   status: ClipStatus;
@@ -126,6 +127,7 @@ export type Clip = {
   has_export: boolean;
   copy_pack: Record<string, unknown> | null;
   edits: Record<string, unknown>;
+  posts: { platform: string; video_id: string; publish_at: string; privacy: string }[];
   updated_at: string | null;
 };
 

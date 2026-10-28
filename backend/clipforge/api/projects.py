@@ -57,9 +57,18 @@ def create_project(
         s.flush()
         pid = p.id
     if file and file.filename:
-        stored = get_storage().save_stream(
-            pid, "upload" + Path(file.filename).suffix.lower(), file.file
-        )
+        from clipforge.settings import get_settings
+        from clipforge.storage import UploadTooLarge
+
+        limit = int(get_settings().max_upload_gb * 1024**3)
+        try:
+            stored = get_storage().save_stream(
+                pid, "upload" + Path(file.filename).suffix.lower(), file.file, limit
+            )
+        except UploadTooLarge as e:
+            with session_scope() as s:
+                s.delete(s.get(Project, pid))
+            raise HTTPException(413, str(e)) from e
         with session_scope() as s:
             s.get(Project, pid).source = str(stored)
     queue.enqueue("process_project", {}, project_id=pid)

@@ -109,6 +109,8 @@ class Clip(Base):
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
     copy_pack: Mapped[dict[str, Any] | None] = mapped_column(nullable=True)
     export_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Scheduled uploads: [{platform, video_id, publish_at, privacy}]
+    posts: Mapped[list[Any] | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

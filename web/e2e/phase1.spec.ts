@@ -23,7 +23,9 @@ test("upload → rights gate → host confirm → ranked clips", async ({ page, 
   const cfg = await (await request.get(`${api}/api/settings`)).json();
   cfg.style.width = 360;
   cfg.style.height = 640;
-  expect((await request.put(`${api}/api/settings`, { data: cfg })).ok()).toBeTruthy();
+  expect(
+    (await request.put(`${api}/api/settings`, { data: cfg, headers: { "X-ClipForge": "1" } })).ok(),
+  ).toBeTruthy();
 
   await page.goto("/");
   await page.getByRole("button", { name: "Upload file" }).click();
@@ -67,6 +69,7 @@ test("URL project without rights is refused by the API", async ({ request }) => 
   const api = process.env.API_URL ?? "http://127.0.0.1:8000";
   const r = await request.post(`${api}/api/projects`, {
     multipart: { url: "https://www.youtube.com/watch?v=x", rights_confirmed: "false" },
+    headers: { "X-ClipForge": "1" },
   });
   expect(r.status()).toBe(422);
 });

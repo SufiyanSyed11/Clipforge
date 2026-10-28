@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import JobLog from "@/components/JobLog";
+import StoragePanel from "@/components/StoragePanel";
 import { api, type Job } from "@/lib/api";
 
 type ProviderStatus = {
@@ -111,6 +112,11 @@ export default function SystemPage() {
         ) : (
           <p className="text-sm text-gray-400">Checking…</p>
         )}
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">Storage</h2>
+        <StoragePanel />
       </section>
 
       <section className="space-y-2">

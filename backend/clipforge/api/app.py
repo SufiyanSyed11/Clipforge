@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 
 from clipforge import __version__
 from clipforge.api.serializers import event_dict, job_dict
 from clipforge.app_settings import AppConfig, load_config, save_config
-from clipforge.db import Job, JobEvent, get_engine, session_scope
+from clipforge.core import disk
+from clipforge.db import Clip, Job, JobEvent, Project, get_engine, session_scope
 from clipforge.jobs import queue
 from clipforge.jobs.registry import registered_kinds
 from clipforge.settings import get_settings
@@ -34,6 +36,12 @@ class JobIn(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class CleanupRequest(BaseModel):
+    target: Literal["intermediates", "broll_cache", "project"]
+    project_id: int | None = None
+    confirm: bool = False
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
 
@@ -45,10 +53,42 @@ def create_app() -> FastAPI:
     app = FastAPI(title="ClipForge API", version=__version__, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.web_origin, "http://127.0.0.1:3000"],
+        allow_origins=[settings.web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    allowed_hosts = {"127.0.0.1", "localhost", "::1", "[::1]"} | {
+        h.strip().lower() for h in settings.allowed_hosts.split(",") if h.strip()
+    }
+
+    @app.middleware("http")
+    async def local_only_guard(request: Request, call_next):
+        """The API is for the local web app only.
+        - Host check: refuses DNS-rebinding requests aimed at 127.0.0.1.
+        - Writes need the X-ClipForge header: browsers can't add it cross-site without a CORS
+          preflight, which only the ClipForge web app passes, so other sites can't trigger
+          uploads or jobs."""
+        host = request.headers.get("host", "").rsplit(":", 1)[0].lower()
+        if host.startswith("[") and "]" in request.headers.get("host", ""):
+            host = request.headers["host"].split("]")[0] + "]"
+        if host not in allowed_hosts:
+            return JSONResponse({"detail": "Host not allowed"}, status_code=400)
+        if (
+            request.method not in ("GET", "HEAD", "OPTIONS")
+            and request.headers.get("x-clipforge") != "1"
+        ):
+            return JSONResponse({"detail": "Missing X-ClipForge header"}, status_code=403)
+        return await call_next(request)
+
+    @app.exception_handler(Exception)
+    async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        import logging
+
+        logging.getLogger("clipforge.api").exception("Unhandled error on %s", request.url.path)
+        return JSONResponse(
+            {"detail": f"Internal error ({type(exc).__name__}); see the API window's log"},
+            status_code=500,
+        )
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -190,6 +230,52 @@ def create_app() -> FastAPI:
         setattr(cfg, BRANDING[kind][2], None)
         return save_config(cfg).model_dump()
 
+    @app.get("/api/storage")
+    def storage_usage():
+        st = get_settings()
+        return disk.usage(st.data_dir, st.min_free_gb).to_dict()
+
+    @app.post("/api/storage/cleanup")
+    def storage_cleanup(body: CleanupRequest):
+        st = get_settings()
+        freed = 0
+        if body.target == "intermediates":
+            root = st.data_dir / "projects"
+            dirs = sorted(root.glob("*")) if root.is_dir() else []
+            if body.project_id is not None:
+                dirs = [root / f"{body.project_id:05d}"]
+            for pdir in dirs:
+                if pdir.is_dir() and disk.safe_child(root, pdir):
+                    freed += disk.clean_intermediates(pdir)
+        elif body.target == "broll_cache":
+            freed = disk.clean_broll_cache(st.data_dir)
+        elif body.target == "project":
+            if body.project_id is None or not body.confirm:
+                raise HTTPException(422, "Deleting a project needs project_id and confirm=true")
+            with session_scope() as s:
+                proj = s.get(Project, body.project_id)
+                if proj is None:
+                    raise HTTPException(404, "Project not found")
+                if any(
+                    j.status in ("queued", "running")
+                    for j in s.scalars(select(Job).where(Job.project_id == body.project_id))
+                ):
+                    raise HTTPException(409, "Cancel this project's running jobs first")
+                s.execute(delete(Clip).where(Clip.project_id == body.project_id))
+                # Keep the job history, detached from the deleted project.
+                s.execute(
+                    update(Job).where(Job.project_id == body.project_id).values(project_id=None)
+                )
+                s.delete(proj)
+            pdir = st.data_dir / "projects" / f"{body.project_id:05d}"
+            if pdir.is_dir() and disk.safe_child(st.data_dir / "projects", pdir):
+                freed = disk._size(pdir)
+                shutil.rmtree(pdir, ignore_errors=True)
+        return {
+            "freed_gb": round(freed / 1024**3, 3),
+            **disk.usage(st.data_dir, st.min_free_gb).to_dict(),
+        }
+
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: int) -> dict[str, Any]:
         try:
@@ -211,10 +297,12 @@ def create_app() -> FastAPI:
             return job_dict(s.get(Job, new_id))
 
     from clipforge.api.clips import router as clips_router
+    from clipforge.api.learning import router as learning_router
     from clipforge.api.projects import router as projects_router
 
     app.include_router(projects_router)
     app.include_router(clips_router)
+    app.include_router(learning_router)
     return app
 
 

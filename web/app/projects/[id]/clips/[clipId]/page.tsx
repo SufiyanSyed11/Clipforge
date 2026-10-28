@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import BrollReview from "@/components/BrollReview";
 import CopyPackEditor from "@/components/CopyPackEditor";
 import JobLog from "@/components/JobLog";
+import PostingPanel from "@/components/PostingPanel";
 import QAChecklist from "@/components/QAChecklist";
 import Waveform from "@/components/Waveform";
 import { API_URL, CLIP_STATUS_LABEL, api, fmtTime, type ClipDetail } from "@/lib/api";
 
-export default function ClipEditor({ params }: { params: { id: string; clipId: string } }) {
+export default function ClipEditor() {
+  const params = useParams<{ id: string; clipId: string }>();
   const clipId = Number(params.clipId);
   const [clip, setClip] = useState<ClipDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +28,8 @@ export default function ClipEditor({ params }: { params: { id: string; clipId: s
   }, [clipId]);
 
   useEffect(() => {
+    // Fetch on mount: state is only set after the request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
@@ -237,6 +242,13 @@ export default function ClipEditor({ params }: { params: { id: string; clipId: s
           return <p className="text-xs text-gray-500">last export: {last.status}</p>;
         })()}
       </section>
+
+      {clip.copy_pack && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Posting</h2>
+          <PostingPanel clipId={clipId} canUpload={clip.verified} />
+        </section>
+      )}
 
       {spec && (
         <section className="space-y-2">

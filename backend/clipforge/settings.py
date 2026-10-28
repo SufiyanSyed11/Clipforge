@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     api_port: int = 8000
     web_origin: str = "http://localhost:3000"
 
+    # Extra host names the API answers to (comma-separated). Local names are always allowed.
+    allowed_hosts: str = ""
+
     worker_poll_seconds: float = 1.0
     # A running job whose heartbeat is older than this is considered abandoned and re-queued.
     job_stale_seconds: float = 300.0
@@ -61,6 +64,16 @@ class Settings(BaseSettings):
     # Free stock-footage API keys (https://www.pexels.com/api/, https://pixabay.com/api/docs/).
     pexels_api_key: str = ""
     pixabay_api_key: str = ""
+
+    # YouTube analytics for the learning loop: an OAuth client of type "Desktop app" from
+    # Google Cloud (free). Leave empty to use CSV import only.
+    youtube_client_id: str = ""
+    youtube_client_secret: str = ""
+    learning_days: int = 3
+
+    # Refuse to start downloads/renders when free disk space is below this many GB.
+    min_free_gb: float = 5.0
+    max_upload_gb: float = 20.0
 
     # Video encoder: auto (NVENC if the GPU supports it, else libx264) | h264_nvenc | libx264
     render_encoder: str = "auto"

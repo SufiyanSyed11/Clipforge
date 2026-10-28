@@ -5,15 +5,22 @@ import { API_URL, type Job, type JobEvent } from "@/lib/api";
 import QAChecklist from "./QAChecklist";
 
 /** Live job log over Server-Sent Events, then the job's QA checklist when it ends. */
-export default function JobLog({ jobId, onEnd }: { jobId: number; onEnd?: (job: Job) => void }) {
+type Props = { jobId: number; onEnd?: (job: Job) => void };
+
+export default function JobLog(props: Props) {
+  // A new job id starts from a clean log.
+  return <JobLogStream key={props.jobId} {...props} />;
+}
+
+function JobLogStream({ jobId, onEnd }: Props) {
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const onEndRef = useRef(onEnd);
-  onEndRef.current = onEnd;
+  useEffect(() => {
+    onEndRef.current = onEnd;
+  });
 
   useEffect(() => {
-    setEvents([]);
-    setJob(null);
     const es = new EventSource(`${API_URL}/api/jobs/${jobId}/events`);
     es.addEventListener("log", (e) => {
       const ev = JSON.parse((e as MessageEvent).data) as JobEvent;

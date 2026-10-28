@@ -118,3 +118,5 @@ class PickedClip(BaseModel):
     flags: list[str] = Field(default_factory=list)
     # Phase 1 windows come from whisper timestamps; Phase 2 moves every cut to real silence.
     windows_are_approximate: bool = True
+    # Data-backed notes from the channel's recent performance (learning loop).
+    why_data: list[str] = Field(default_factory=list)

@@ -323,3 +323,24 @@ def test_stress_zero_clipped_words(noise, err):
         assert [t.text for t in truths[a : b + 1]] == heard
         qa = verify.verify_voice(voice, res.spec, decode_words(truths), transcriber_is_real=False)
         assert not [c for c in qa.failures if c.name != "re-transcription by a real model"]
+
+
+def test_gate_fails_on_audible_profanity_unless_allowed():
+    audio, tr, truths = make_speech(_story(), seed=15)
+    w = tr.words
+    a, _ = _sent(truths, 1)
+    _, b = _sent(truths, 3)
+    spec = _engine(audio, tr).build([(w[a].start, w[b].end)], "s").spec
+    voice = assemble_voice(audio, spec)
+
+    def leaky(v, sr):
+        return decode_words(truths)(v, sr) + ["fucking"]
+
+    qa = verify.verify_voice(voice, spec, leaky)
+    leak = next(c for c in qa.checks if c.name == "no profanity audible in the cut")
+    assert not leak.passed and "fucking" in leak.detail and leak.severity == "error"
+    qa = verify.verify_voice(voice, spec, leaky, profanity_allowed=True)
+    leak = next(c for c in qa.checks if c.name == "no profanity audible in the cut")
+    assert leak.passed and "allowed" in leak.detail
+    qa = verify.verify_voice(voice, spec, decode_words(truths))
+    assert next(c for c in qa.checks if c.name == "no profanity audible in the cut").passed

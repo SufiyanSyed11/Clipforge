@@ -13,11 +13,12 @@ from pathlib import Path
 from sqlalchemy import delete
 
 from clipforge.app_settings import load_config
-from clipforge.core import diarize, ingest, pick, transcribe
+from clipforge.core import diarize, disk, ingest, pick, transcribe
+from clipforge.core.learn import learning_context, load_insights, why_this_clip
 from clipforge.db import Clip, Project, session_scope
 from clipforge.jobs import queue
 from clipforge.jobs.registry import JobContext, TaskError, TaskResult, task
-from clipforge.llm import get_text_provider
+from clipforge.llm import get_text_provider, get_vision_provider
 from clipforge.models import Transcript
 from clipforge.qa import QAReport
 from clipforge.settings import get_settings
@@ -47,11 +48,15 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def free_llm_vram(ctx: JobContext) -> None:
-    """Whisper and a local LLM don't both fit in 6 GB of VRAM: ask Ollama to unload first."""
-    provider = get_text_provider()
-    unload = getattr(provider, "unload", None)
-    if unload:
-        unload()
+    """Whisper and a local LLM don't both fit in 6 GB of VRAM: ask Ollama to unload first
+    (the text model and, if one is configured, the B-roll vision model)."""
+    unloaded = False
+    for provider in (get_text_provider(), get_vision_provider()):
+        unload = getattr(provider, "unload", None)
+        if unload:
+            unload()
+            unloaded = True
+    if unloaded:
         ctx.log("Asked Ollama to free GPU memory before transcription")
 
 
@@ -59,6 +64,13 @@ def diarization_backend(settings, env_report: dict | None) -> str:
     if settings.diarization_backend != "auto":
         return settings.diarization_backend
     return (env_report or {}).get("defaults", {}).get("diarization_backend", "basic")
+
+
+def _require_disk(path: Path, need_gb: float, what: str) -> None:
+    try:
+        disk.require_free(path, get_settings().min_free_gb, need_gb, what)
+    except disk.LowDiskSpace as e:
+        raise TaskError(str(e)) from e
 
 
 def run_ingest_and_transcribe(
@@ -75,6 +87,7 @@ def run_ingest_and_transcribe(
     if media is None or not media.exists():
         if p.source_type == "url":
             ctx.log(f"Ingest: {p.source}")
+            _require_disk(pdir, need_gb=3.0, what="the episode download")
             media = ingest.download(p.source, pdir / "source", lambda m: ctx.log(m))
         else:
             media = Path(p.source)
@@ -100,6 +113,7 @@ def run_ingest_and_transcribe(
     # 2. audio for whisper + diarization
     wav = pdir / "audio16k.wav"
     if not wav.exists():
+        _require_disk(pdir, need_gb=info.duration * 32000 / 1024**3, what="audio extraction")
         ctx.log("Extracting 16 kHz mono audio")
         ingest.extract_audio(media, wav)
 
@@ -230,11 +244,15 @@ def pick_clips_task(ctx: JobContext) -> TaskResult:
             style=cfg.style.model_dump(),
             prompt_version=settings.picker_prompt_version,
             max_retries=settings.picker_max_retries,
+            extra_context=learning_context(),
         )
     except pick.PickerError as e:
         _update(pid, status="failed")
         raise TaskError(str(e)) from e
     qa = pick.pick_qa(result, p.clip_count, t)
+    insights = load_insights()
+    for c in result.clips:
+        c.why_data = why_this_clip(c.plan.model_dump(), c.duration, insights)
     pdir = get_storage().project_dir(pid)
     _atomic_write(
         pdir / "clips.json",

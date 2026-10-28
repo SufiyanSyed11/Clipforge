@@ -5,8 +5,9 @@ import { API_URL, fmtTime, upload, type BrollChoice, type BrollSlot } from "@/li
 
 function Sheet({ clipId, slot, candidate }: { clipId: number; slot: number; candidate?: number }) {
   const q = candidate === undefined ? "" : `?candidate=${candidate}`;
-  // eslint-disable-next-line @next/next/no-img-element
   return (
+    // Served by the local API; next/image optimisation doesn't apply.
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={`${API_URL}/api/clips/${clipId}/broll/${slot}/sheet${q}`}
       alt="contact sheet"

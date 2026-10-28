@@ -24,6 +24,7 @@ from clipforge.llm.anthropic_provider import AnthropicProvider
 from clipforge.llm.doubles import FakeLLM
 from clipforge.llm.ollama import OllamaProvider
 from clipforge.settings import Settings
+from tests.helpers import api_client
 from tests.test_pick import _clip, _transcript
 
 GOOD = json.dumps({"clips": [_clip([(100, 122)])]})
@@ -310,9 +311,7 @@ def test_vision_is_off_by_default():
 
 def test_job_fails_fast_when_ollama_is_down(monkeypatch, tmp_path):
     """process_project checks the picker model before the long ingest/transcribe steps."""
-    from fastapi.testclient import TestClient
 
-    from clipforge.api.app import create_app
     from clipforge.jobs.worker import run_one
     from clipforge.llm import factory
     from tests.media import make_video
@@ -321,7 +320,7 @@ def test_job_fails_fast_when_ollama_is_down(monkeypatch, tmp_path):
         model="qwen3:4b", transport=httpx.MockTransport(FakeOllama(down=True).handler)
     )
     monkeypatch.setattr(factory, "_build", lambda *a, **k: down)
-    c = TestClient(create_app())
+    c = api_client()
     video = make_video(tmp_path / "ep.mp4", seconds=3)
     with video.open("rb") as f:
         pid = c.post(

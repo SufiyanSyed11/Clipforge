@@ -108,6 +108,13 @@ export default function ClipCard({ clip, onChange }: { clip: Clip; onChange?: ()
               <li key={r}>{r}</li>
             ))}
           </ul>
+          {(c.why_data ?? []).length > 0 && (
+            <ul className="mt-1 list-disc pl-5 text-sky-300" data-testid="why-data">
+              {(c.why_data ?? []).map((r) => (
+                <li key={r}>Channel data: {r}</li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {clip.copy_pack && (

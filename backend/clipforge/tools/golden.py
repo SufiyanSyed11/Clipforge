@@ -1,11 +1,15 @@
-"""`clipforge-golden`: run Phase 1 on the owner's three golden-sample episodes.
+"""`clipforge-golden`: run the full pipeline on the owner's three golden-sample episodes.
 
-    clipforge-golden init      # writes golden/episodes.json to fill in
-    clipforge-golden run       # runs every episode (or --episode ID)
+    clipforge-golden init           # writes golden/episodes.json to fill in
+    clipforge-golden run            # every episode: ingest -> pick -> build every clip
+    clipforge-golden run --pick-only    # Phase 1 only (transcribe + pick)
 
-Results go to docs/reports/phase-1/<episode id>/ (transcript, clips, QA) plus summary.md.
-Nothing is written as "passed" by this tool: it records what ran and what the QA checks said,
-and leaves the "what is weak" review to the owner. It refuses to run with FAKE_MODELS.
+Results go to docs/reports/golden/<episode id>/ (transcript, clips, QA) plus
+golden-summary.md with the quality-bar checks per clip. Clips are built through the same job
+queue the worker uses, so stop the worker (scripts/dev) while this runs or both will compete.
+Nothing is written as "passed" by this tool beyond what the automated checks measured: the
+owner still watches and listens, and fills in "what is weak". It refuses to run with
+FAKE_MODELS.
 """
 
 from __future__ import annotations
@@ -17,13 +21,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from clipforge.db import Project, session_scope, utcnow
+from clipforge.db import Clip, Job, Project, session_scope, utcnow
+from clipforge.jobs import queue
 from clipforge.jobs.registry import JobContext
-from clipforge.pipeline import tasks
+from clipforge.pipeline import clip_tasks, tasks  # noqa: F401  (registers the job kinds)
 from clipforge.settings import REPO_ROOT, get_settings
 
 EPISODES = REPO_ROOT / "golden" / "episodes.json"
-REPORT_DIR = REPO_ROOT / "docs" / "reports" / "phase-1"
+REPORT_DIR = REPO_ROOT / "docs" / "reports" / "golden"
 
 TEMPLATE = {
     "_how_to": (
@@ -73,7 +78,80 @@ def _fmt(t: float) -> str:
     return f"{int(t // 60)}:{t % 60:05.2f}"
 
 
-def run_episode(ep: dict, n: int) -> dict:
+# Quality bar (CLAUDE.md, "Golden-sample quality bar") -> the gate checks that measure it.
+QUALITY_BAR: list[tuple[str, list[tuple[str, str]]]] = [
+    (
+        "zero clipped words",
+        [
+            ("verify", "no word missing at a join or edge (zero clipped words)"),
+            ("verify", "re-transcription matches the intended words"),
+            ("verify", "join at"),
+            ("verify", "first 0.3 s"),
+            ("verify", "last 0.45 s"),
+            ("verify", "re-transcription by a real model"),
+        ],
+    ),
+    ("zero profanity leaks", [("verify", "no profanity audible in the cut")]),
+    ("voice at -14 LUFS", [("mix", "voice at about -14 LUFS")]),
+    ("BGM under the voice", [("mix", "music about 19 dB under the voice")]),
+    ("limiter at -1 dB", [("mix", "limiter")]),
+    (
+        "audio duration == video duration",
+        [
+            ("render-verify", "audio duration equals video duration"),
+            ("render-verify", "frame count matches"),
+        ],
+    ),
+    ("B-roll checked (no text/logos)", [("broll", "footage checked")]),
+]
+
+
+def quality_bar(qa: list[dict]) -> list[tuple[str, str, str]]:
+    """(item, PASS/FAIL/not measured, detail) for one clip, from its QA reports."""
+    out = []
+    for item, probes in QUALITY_BAR:
+        hits = [
+            c
+            for rep in qa
+            for c in rep["checks"]
+            for step, prefix in probes
+            if rep["step"] == step and prefix in c["name"]
+        ]
+        if not hits:
+            out.append((item, "not measured", "-"))
+            continue
+        bad = [c for c in hits if not c["passed"]]
+        detail = "; ".join(
+            f"{c['name']}: {c['detail']}"
+            + (f" @ {c['at_seconds']:.2f} s" if c.get("at_seconds") is not None else "")
+            for c in bad[:3]
+        )
+        out.append((item, "FAIL" if bad else "PASS", detail or f"{len(hits)} check(s)"))
+    return out
+
+
+def drain_queue(project_id: int) -> None:
+    """Run this project's queued jobs (analysis, clip builds, copy) like the worker does."""
+    from clipforge.jobs.worker import run_one
+
+    while True:
+        with session_scope() as s:
+            pending = (
+                s.query(Job)
+                .filter(Job.project_id == project_id, Job.status.in_(("queued", "running")))
+                .count()
+            )
+        if not pending:
+            return
+        job_id = run_one("golden")
+        if job_id is None:
+            return  # only another worker's running jobs are left
+        with session_scope() as s:
+            j = s.get(Job, job_id)
+            print(f"  job {j.kind} #{j.id}: {j.status}" + (f" ({j.error})" if j.error else ""))
+
+
+def run_episode(ep: dict, n: int, pick_only: bool = False) -> dict:
     out = REPORT_DIR / ep["id"]
     out.mkdir(parents=True, exist_ok=True)
     src = ep["source"]
@@ -104,6 +182,9 @@ def run_episode(ep: dict, n: int) -> dict:
     host_source = (
         "set in episodes.json" if ep.get("host_speaker") else "app suggestion (unreviewed)"
     )
+    if not pick_only and (media_info or {}).get("has_video"):
+        # Queued before the clip builds, so faces/speakers are analysed first.
+        queue.enqueue("analyze_video", {}, project_id=pid)
     pick_result = tasks.pick_clips_task(ctx)
     pdir = Path(tasks.get_storage().project_dir(pid))
     clips = json.loads((pdir / "clips.json").read_text(encoding="utf-8"))
@@ -111,7 +192,34 @@ def run_episode(ep: dict, n: int) -> dict:
         (out / name).write_bytes((pdir / name).read_bytes())
     all_qa = [r.to_dict() for r in qa] + [r.to_dict() for r in pick_result.qa]
     (out / "qa.json").write_text(json.dumps(all_qa, indent=2), encoding="utf-8")
+    built: list[dict] = []
+    if pick_only:
+        with session_scope() as s:
+            for j in s.query(Job).filter(Job.project_id == pid, Job.status == "queued"):
+                j.status, j.error = "cancelled", "golden run with --pick-only"
+    else:
+        started = time.time()
+        drain_queue(pid)
+        build_s = time.time() - started
+        with session_scope() as s:
+            for c in s.query(Clip).filter(Clip.project_id == pid).order_by(Clip.rank):
+                built.append(
+                    {
+                        "rank": c.rank,
+                        "status": c.status,
+                        "verified": c.verified,
+                        "error": c.error,
+                        "render": c.render_path,
+                        "copy_title": (c.copy_pack or {}).get("title"),
+                        "quality_bar": quality_bar(c.qa or []),
+                    }
+                )
+                (out / f"clip{c.rank:02d}-qa.json").write_text(
+                    json.dumps(c.qa or [], indent=2), encoding="utf-8"
+                )
+        print(f"  built {len(built)} clip(s) in {build_s:.0f} s")
     return {
+        "built": built,
         "id": ep["id"],
         "title": ep.get("title"),
         "notes": ep.get("notes"),
@@ -133,7 +241,7 @@ def run_episode(ep: dict, n: int) -> dict:
 def summary_markdown(results: list[dict], env: dict | None) -> str:
     s = get_settings()
     lines = [
-        "# Phase 1 golden run",
+        "# Golden run",
         "",
         f"Run at {datetime.now().isoformat(timespec='minutes')}. "
         f"Clip picker `{s.llm_provider}`, prompt `{s.picker_prompt_version}`.",
@@ -183,13 +291,30 @@ def summary_markdown(results: list[dict], env: dict | None) -> str:
                 "Rejected by the hard rules: "
                 + "; ".join(f"#{x['model_rank']} {x['reason']}" for x in r["rejected"])
             )
+        if r.get("built"):
+            lines += ["", "### Built clips: quality bar (automated checks)", ""]
+            for b in r["built"]:
+                state = "verified" if b["verified"] else b["status"]
+                lines.append(
+                    f"**Clip #{b['rank']}** — {state}"
+                    + (f" — {b['error']}" if b.get("error") else "")
+                    + (f" — title: {b['copy_title']}" if b.get("copy_title") else "")
+                    + (f"  \n`{b['render']}`" if b.get("render") else "")
+                )
+                lines += ["", "| Quality bar | Result | Detail |", "|---|---|---|"]
+                for item, res, detail in b["quality_bar"]:
+                    lines.append(f"| {item} | {res} | {detail.replace('|', '/')[:200]} |")
+                lines.append("")
         lines += ["", "### Owner review: what is weak", "", "- (fill in after watching/listening)"]
     lines += [
         "",
         "## Not verified by this run",
         "",
-        "- Clip windows use whisper timestamps; cutting in real silence is Phase 2.",
         "- Clip quality is the owner's judgement; the QA checks only cover structure and rules.",
+        "- B-roll 'no text/logos' is only proven by a vision model or the owner's approval of "
+        "each contact sheet; 'PASS' means every shot was approved under the current rules.",
+        "- The quality bar is met only if every built clip shows PASS on every row AND the "
+        "owner found nothing wrong watching and listening.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -201,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run")
     run.add_argument("--episode", help="run only this episode id")
     run.add_argument("-n", type=int, default=8)
+    run.add_argument("--pick-only", action="store_true", help="transcribe and pick only")
     args = ap.parse_args(argv)
 
     if args.cmd == "init":
@@ -236,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     for e in ready:
         print(f"== {e['id']} {e.get('title') or ''}")
         try:
-            results.append(run_episode(e, args.n))
+            results.append(run_episode(e, args.n, args.pick_only))
         except Exception as ex:  # record and continue with the next episode
             print(f"  FAILED: {ex}")
             results.append({"id": e["id"], "title": e.get("title"), "error": str(ex)})
