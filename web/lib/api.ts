@@ -55,3 +55,69 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
+export type SpeakerStats = {
+  speaker: string;
+  talk_seconds: number;
+  talk_share: number;
+  turns: number;
+  questions: number;
+  first_spoke_at: number;
+  sample: string;
+};
+
+export type Project = {
+  id: number;
+  name: string;
+  source_type: "url" | "upload";
+  source: string;
+  rights_confirmed: boolean;
+  status: "created" | "processing" | "awaiting_host" | "picking" | "clips_ready" | "failed";
+  clip_count: number;
+  media_info: {
+    duration: number;
+    fps: number | null;
+    width: number | null;
+    height: number | null;
+    has_video: boolean;
+  } | null;
+  speakers: { backend: string; separation: number | null; stats: SpeakerStats[] } | null;
+  host_speaker: string | null;
+  host_suggestion: { speaker: string; confidence: "high" | "medium" | "low"; reasons: string[] } | null;
+  host_confirmed: boolean;
+  created_at: string;
+  jobs?: Job[];
+};
+
+export type RiskFlag = { type: string; detail: string; at_seconds: number | null };
+
+export type ClipPlan = {
+  segments: { start: number; end: number; text: string }[];
+  hook: string;
+  context: string;
+  payoff: string;
+  virality_score: number;
+  reasons: string[];
+  title_options: string[];
+  broll_beats: string[];
+  risk_flags: RiskFlag[];
+  improvements: string;
+};
+
+export type Clip = {
+  id: number;
+  rank: number;
+  plan: {
+    rank: number;
+    plan: ClipPlan;
+    duration: number;
+    stitched: boolean;
+    flags: string[];
+    windows_are_approximate: boolean;
+  };
+};
+
+export function fmtTime(t: number): string {
+  const m = Math.floor(t / 60);
+  return `${m}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+}

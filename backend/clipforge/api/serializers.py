@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
 from typing import Any
 
 from clipforge.db import Clip, Job, JobEvent, Project
@@ -42,7 +43,7 @@ def project_dict(p: Project) -> dict[str, Any]:
         "id": p.id,
         "name": p.name,
         "source_type": p.source_type,
-        "source": p.source if p.source_type == "url" else p.source.split("/")[-1],
+        "source": p.source if p.source_type == "url" else PureWindowsPath(p.source).name,
         "rights_confirmed": p.rights_confirmed,
         "status": p.status,
         "clip_count": p.clip_count,
