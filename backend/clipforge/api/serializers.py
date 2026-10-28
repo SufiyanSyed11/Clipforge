@@ -56,5 +56,22 @@ def project_dict(p: Project) -> dict[str, Any]:
     }
 
 
-def clip_dict(c: Clip) -> dict[str, Any]:
-    return {"id": c.id, "project_id": c.project_id, "rank": c.rank, "plan": c.plan, "qa": c.qa}
+def clip_dict(c: Clip, full: bool = False) -> dict[str, Any]:
+    d = {
+        "id": c.id,
+        "project_id": c.project_id,
+        "rank": c.rank,
+        "plan": c.plan,
+        "qa": c.qa or [],
+        "status": c.status,
+        "error": c.error,
+        "verified": c.verified,
+        "has_render": bool(c.render_path),
+        "has_export": bool(c.export_path),
+        "copy_pack": c.copy_pack,
+        "edits": c.edits or {},
+        "updated_at": _iso(c.updated_at),
+    }
+    if full:
+        d["spec"] = c.spec
+    return d

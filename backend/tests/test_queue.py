@@ -81,3 +81,26 @@ def test_abandoned_running_job_is_requeued_then_failed_after_max_attempts():
 
 def test_empty_queue_returns_none():
     assert run_one("idle") is None
+
+
+def test_old_database_gains_new_columns(tmp_path, monkeypatch):
+    """A database created by an older version is upgraded in place."""
+    import sqlite3
+
+    from clipforge import db
+    from clipforge.settings import get_settings
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE clips (id INTEGER PRIMARY KEY, project_id INTEGER, rank INTEGER, "
+        "plan JSON, qa JSON, created_at DATETIME)"
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{path.as_posix()}")
+    get_settings.cache_clear()
+    db.reset_caches()
+    db.get_engine()
+    cols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(clips)")}
+    assert {"status", "spec", "edits", "render_path", "verified", "copy_pack"} <= cols

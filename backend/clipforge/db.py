@@ -96,8 +96,19 @@ class Clip(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     rank: Mapped[int] = mapped_column(Integer)
     plan: Mapped[dict[str, Any]] = mapped_column()
-    qa: Mapped[dict[str, Any] | None] = mapped_column(nullable=True)
+    qa: Mapped[list[Any] | None] = mapped_column(nullable=True)
+    # picked -> building -> ready (rendered, gate passed) | needs_review (gate failed) | failed
+    status: Mapped[str] = mapped_column(String(32), default="picked")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    spec: Mapped[dict[str, Any] | None] = mapped_column(nullable=True)
+    # Owner edits: trims, caption word fixes, B-roll swaps/approvals, host-insert toggle.
+    edits: Mapped[dict[str, Any] | None] = mapped_column(nullable=True)
+    render_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    copy_pack: Mapped[dict[str, Any] | None] = mapped_column(nullable=True)
+    export_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AppSetting(Base):
@@ -129,7 +140,32 @@ def get_engine() -> Engine:
             cur.close()
 
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    """Tiny forward-only migration: add columns that newer versions define (all nullable or
+    defaulted), so an existing local database keeps working after an upgrade."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                ddl = col.type.compile(dialect=engine.dialect)
+                default = ""
+                if col.default is not None and getattr(col.default, "is_scalar", False):
+                    v = col.default.arg
+                    default = f" DEFAULT {int(v) if isinstance(v, bool) else repr(v)}"
+                conn.execute(
+                    text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ddl}{default}')
+                )
 
 
 @lru_cache

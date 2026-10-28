@@ -11,7 +11,7 @@ import time
 import traceback
 
 from clipforge.jobs import queue
-from clipforge.jobs.registry import JobContext, TaskError, get_task
+from clipforge.jobs.registry import JobContext, TaskCancelled, TaskError, get_task
 from clipforge.settings import get_settings
 
 log = logging.getLogger("clipforge.worker")
@@ -50,7 +50,12 @@ def run_one(worker_id: str, kinds: list[str] | None = None) -> int | None:
     beat.start()
     try:
         out = fn(ctx)
-        queue.complete(job.id, out.result, out.qa)
+        if queue.is_cancel_requested(job.id):
+            queue.mark_cancelled(job.id)
+        else:
+            queue.complete(job.id, out.result, out.qa)
+    except TaskCancelled:
+        queue.mark_cancelled(job.id)
     except TaskError as e:
         queue.fail(job.id, str(e), e.qa)
     except Exception as e:  # unexpected: keep the traceback in the job log

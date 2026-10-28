@@ -16,6 +16,7 @@ def ping(ctx: JobContext) -> TaskResult:
         raise TaskError("ping asked to fail")
     for i in range(1, steps + 1):
         time.sleep(delay)
+        ctx.check_cancelled()
         ctx.log(f"ping step {i}/{steps}", progress=i / steps)
     qa = QAReport(step="ping")
     qa.check("worker received the job", True, f"job {ctx.job_id}")

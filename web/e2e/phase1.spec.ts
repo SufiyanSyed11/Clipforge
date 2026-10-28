@@ -12,15 +12,19 @@ const video = path.join(fixtureDir, "episode.mp4");
 
 test.beforeAll(() => {
   mkdirSync(fixtureDir, { recursive: true });
-  execFileSync("ffmpeg", [
-    "-y", "-v", "error",
-    "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=75",
-    "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=75",
-    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video,
-  ]);
+  // Synthetic-speech fixture the FAKE_MODELS test doubles understand (no real podcast).
+  const python = process.env.PYTHON ?? "python";
+  execFileSync(python, ["-m", "clipforge.testing.synth", video, "--seconds", "75"]);
 });
 
-test("upload → rights gate → host confirm → ranked clips", async ({ page }) => {
+test("upload → rights gate → host confirm → ranked clips", async ({ page, request }) => {
+  // Small renders keep the test fast; the pipeline is the same at 1080x1920.
+  const api = process.env.API_URL ?? "http://127.0.0.1:8000";
+  const cfg = await (await request.get(`${api}/api/settings`)).json();
+  cfg.style.width = 360;
+  cfg.style.height = 640;
+  expect((await request.put(`${api}/api/settings`, { data: cfg })).ok()).toBeTruthy();
+
   await page.goto("/");
   await page.getByRole("button", { name: "Upload file" }).click();
   await page.getByLabel("Episode file").setInputFiles(video);
@@ -47,8 +51,9 @@ test("upload → rights gate → host confirm → ranked clips", async ({ page }
   await expect(cards.first()).toContainText("Virality");
   await expect(cards.first()).toContainText("Hook:");
   await expect(cards.first().getByTestId("clip-qa")).toContainText("30 s hard max");
-  // The stub run must say it isn't a real result.
-  await expect(page.getByTestId("qa-checklist").first()).toContainText("real clip picking");
+  // Every clip is rendered; with test doubles the gate honestly says "needs review".
+  await expect(page.getByTestId("clip-video").first()).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByTestId("clip-status").first()).toContainText("needs review");
   if (process.env.REPORT_DIR) {
     await page.screenshot({ path: `${process.env.REPORT_DIR}/phase1-clips-e2e.png`, fullPage: true });
   }

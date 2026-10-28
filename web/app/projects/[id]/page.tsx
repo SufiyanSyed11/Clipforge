@@ -26,6 +26,14 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
     load();
   }, [load]);
 
+  // While clips are being built, refresh every few seconds.
+  const building = clips.some((c) => c.status === "picked" || c.status === "building");
+  useEffect(() => {
+    if (!building) return;
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [building, load]);
+
   async function confirmHost(speaker: string) {
     setSaving(true);
     setError(null);
@@ -141,7 +149,7 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
               ` (asked for ${project.clip_count}; fewer good clips were found, none padded)`}
           </h2>
           {clips.map((c) => (
-            <ClipCard key={c.id} clip={c} />
+            <ClipCard key={c.id} clip={c} onChange={load} />
           ))}
         </section>
       )}

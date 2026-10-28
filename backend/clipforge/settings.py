@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     anthropic_effort: str = "high"
     anthropic_fallbacks: str = "default"  # "default" or "off"
 
+    # Video encoder: auto (NVENC if the GPU supports it, else libx264) | h264_nvenc | libx264
+    render_encoder: str = "auto"
+
     picker_prompt_version: str = "v1"
     picker_max_retries: int = 2
 

@@ -104,8 +104,11 @@ export type ClipPlan = {
   improvements: string;
 };
 
+export type ClipStatus = "picked" | "building" | "ready" | "needs_review" | "failed";
+
 export type Clip = {
   id: number;
+  project_id: number;
   rank: number;
   plan: {
     rank: number;
@@ -115,6 +118,23 @@ export type Clip = {
     flags: string[];
     windows_are_approximate: boolean;
   };
+  qa: QAReport[];
+  status: ClipStatus;
+  error: string | null;
+  verified: boolean;
+  has_render: boolean;
+  has_export: boolean;
+  copy_pack: Record<string, unknown> | null;
+  edits: Record<string, unknown>;
+  updated_at: string | null;
+};
+
+export const CLIP_STATUS_LABEL: Record<ClipStatus, string> = {
+  picked: "queued for build",
+  building: "building…",
+  ready: "verified",
+  needs_review: "needs review (gate failed)",
+  failed: "failed",
 };
 
 export function fmtTime(t: number): string {

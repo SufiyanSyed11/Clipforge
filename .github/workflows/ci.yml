@@ -58,5 +58,7 @@ jobs:
           for i in $(seq 1 60); do curl -sf localhost:3000 >/dev/null && curl -sf 127.0.0.1:8000/api/health >/dev/null && break; sleep 1; done
       - run: npx playwright test
         working-directory: web
+        env:
+          PYTHON: python
       - if: failure()
         run: tail -n 100 api.log worker.log web.log

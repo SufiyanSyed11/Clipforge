@@ -10,6 +10,10 @@ from clipforge.jobs import queue
 from clipforge.qa import QAReport
 
 
+class TaskCancelled(Exception):
+    """Raised inside a task when the owner cancelled the job."""
+
+
 class TaskError(Exception):
     """A task failure that should be shown to the user as-is (no traceback)."""
 
@@ -37,6 +41,13 @@ class JobContext:
     def heartbeat(self) -> None:
         queue.heartbeat(self.job_id)
 
+    def cancelled(self) -> bool:
+        return queue.is_cancel_requested(self.job_id)
+
+    def check_cancelled(self) -> None:
+        if self.cancelled():
+            raise TaskCancelled()
+
 
 TaskFn = Callable[[JobContext], TaskResult]
 _TASKS: dict[str, TaskFn] = {}
@@ -63,4 +74,4 @@ def registered_kinds() -> list[str]:
 def load_builtin_tasks() -> None:
     # Importing registers the tasks.
     from clipforge.jobs import builtin  # noqa: F401
-    from clipforge.pipeline import tasks  # noqa: F401
+    from clipforge.pipeline import clip_tasks, tasks  # noqa: F401

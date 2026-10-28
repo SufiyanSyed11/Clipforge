@@ -126,7 +126,7 @@ def create_app() -> FastAPI:
                     for ev in events:
                         last = ev.id
                         yield f"id: {ev.id}\nevent: log\ndata: {json.dumps(event_dict(ev))}\n\n"
-                    if job.status in ("done", "failed") and not events:
+                    if job.status in ("done", "failed", "cancelled") and not events:
                         yield f"event: end\ndata: {json.dumps(job_dict(job))}\n\n"
                         return
                 idle_ticks = 0 if events else idle_ticks + 1
@@ -140,9 +140,31 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: int) -> dict[str, Any]:
+        try:
+            queue.request_cancel(job_id)
+        except KeyError as e:
+            raise HTTPException(404, "Job not found") from e
+        with session_scope() as s:
+            return job_dict(s.get(Job, job_id))
+
+    @app.post("/api/jobs/{job_id}/retry", status_code=201)
+    def retry_job(job_id: int) -> dict[str, Any]:
+        try:
+            new_id = queue.retry(job_id)
+        except KeyError as e:
+            raise HTTPException(404, "Job not found") from e
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        with session_scope() as s:
+            return job_dict(s.get(Job, new_id))
+
+    from clipforge.api.clips import router as clips_router
     from clipforge.api.projects import router as projects_router
 
     app.include_router(projects_router)
+    app.include_router(clips_router)
     return app
 
 

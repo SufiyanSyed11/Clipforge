@@ -33,6 +33,8 @@ class AppConfig(BaseModel):
     )
     # Owner decision 4: frame repetition unless interpolation is explicitly enabled.
     frame_rate_mode: Literal["repeat", "interpolate"] = "repeat"
+    # One consistent colour grade for every clip.
+    grade: Literal["none", "clean", "warm", "cool"] = "clean"
     # Owner decision 7: spec defaults, editable; enforced on every B-roll pick (Phase 4).
     broll_banned_content: list[str] = Field(
         default_factory=lambda: ["women", "any person who is not clearly identified"]
@@ -69,6 +71,10 @@ def save_config(cfg: AppConfig) -> AppConfig:
         raise ValueError("max_clip_seconds can't exceed the 30 s hard max")
     if cfg.style.min_clip_seconds > cfg.style.max_clip_seconds:
         raise ValueError("min_clip_seconds must be <= max_clip_seconds")
+    if cfg.style.width * 16 != cfg.style.height * 9 or cfg.style.width % 2:
+        raise ValueError("Output must be vertical 9:16 with even dimensions (e.g. 1080x1920)")
+    if cfg.style.fps not in (30, 60):
+        raise ValueError("fps must be 30 or 60")
     with session_scope() as s:
         row = s.get(AppSetting, _KEY)
         if row:

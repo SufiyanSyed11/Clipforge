@@ -15,6 +15,7 @@ from sqlalchemy import delete
 from clipforge.app_settings import load_config
 from clipforge.core import diarize, ingest, pick, transcribe
 from clipforge.db import Clip, Project, session_scope
+from clipforge.jobs import queue
 from clipforge.jobs.registry import JobContext, TaskError, TaskResult, task
 from clipforge.llm import get_text_provider
 from clipforge.models import Transcript
@@ -115,8 +116,11 @@ def run_ingest_and_transcribe(
         ctx.log("Using cached transcript")
         t = Transcript.model_validate_json(raw_path.read_text(encoding="utf-8"))
     elif settings.fake_models:
-        ctx.log("FAKE_MODELS: using the stub transcript (plumbing test, not a real result)")
-        t = transcribe.fake_transcript(info.duration)
+        from clipforge.testing import fake_asr
+
+        ctx.log("FAKE_MODELS: test-double transcription (plumbing test, not a real result)")
+        audio16, _ = ingest.load_wav(wav)
+        t = fake_asr.transcribe(audio16, 16000, info.duration)
     else:
         if cfg.device == "cuda":
             free_llm_vram(ctx)
@@ -245,10 +249,14 @@ def pick_clips_task(ctx: JobContext) -> TaskResult:
     )
     with session_scope() as s:
         s.execute(delete(Clip).where(Clip.project_id == pid))
-        for c in result.clips:
-            s.add(Clip(project_id=pid, rank=c.rank, plan=c.model_dump()))
+        new = [Clip(project_id=pid, rank=c.rank, plan=c.model_dump()) for c in result.clips]
+        s.add_all(new)
+        s.flush()
+        clip_ids = [c.id for c in new]
     _update(pid, status="clips_ready")
-    ctx.log(f"{len(result.clips)} clips ready", progress=1.0)
+    for cid in clip_ids:
+        queue.enqueue("build_clip", {"clip_id": cid}, project_id=pid)
+    ctx.log(f"{len(result.clips)} clips picked; building each one", progress=1.0)
     return TaskResult(
         result={"clips": len(result.clips), "rejected": len(result.rejected)}, qa=[qa]
     )

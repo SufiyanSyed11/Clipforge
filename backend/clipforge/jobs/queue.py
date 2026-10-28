@@ -94,15 +94,64 @@ def fail(job_id: int, error: str, qa: list[QAReport] | None = None) -> None:
         s.add(JobEvent(job_id=job_id, message=f"Failed: {error}", level="error"))
 
 
+def request_cancel(job_id: int) -> str:
+    """Cancel a job: queued jobs stop immediately; running ones stop at their next check."""
+    with session_scope() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.status == "queued":
+            job.status = "cancelled"
+            job.finished_at = utcnow()
+            s.add(JobEvent(job_id=job_id, message="Cancelled before it started", level="warn"))
+        elif job.status == "running":
+            job.status = "cancel_requested"
+            s.add(JobEvent(job_id=job_id, message="Cancel requested", level="warn"))
+        return job.status
+
+
+def is_cancel_requested(job_id: int) -> bool:
+    with session_scope() as s:
+        job = s.get(Job, job_id)
+        return job is not None and job.status == "cancel_requested"
+
+
+def mark_cancelled(job_id: int) -> None:
+    with session_scope() as s:
+        s.execute(
+            update(Job).where(Job.id == job_id).values(status="cancelled", finished_at=utcnow())
+        )
+        s.add(JobEvent(job_id=job_id, message="Cancelled", level="warn"))
+
+
+def retry(job_id: int) -> int:
+    """Queue a fresh copy of a failed/cancelled job. Cached intermediates make it resume."""
+    with session_scope() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.status not in ("failed", "cancelled"):
+            raise ValueError(f"Job {job_id} is {job.status}; only failed or cancelled jobs retry")
+        kind, payload, project_id = job.kind, dict(job.payload or {}), job.project_id
+    return enqueue(kind, payload, project_id)
+
+
 def requeue_stale(stale_seconds: float) -> list[int]:
     """Re-queue running jobs whose worker stopped sending heartbeats (crash, closed window)."""
     cutoff = utcnow() - timedelta(seconds=stale_seconds)
     requeued: list[int] = []
     with session_scope() as s:
         stale = s.scalars(
-            select(Job).where(Job.status == "running", Job.heartbeat_at < cutoff)
+            select(Job).where(
+                Job.status.in_(["running", "cancel_requested"]), Job.heartbeat_at < cutoff
+            )
         ).all()
         for job in stale:
+            if job.status == "cancel_requested":
+                job.status = "cancelled"
+                job.finished_at = utcnow()
+                s.add(JobEvent(job_id=job.id, message="Cancelled (worker stopped)", level="warn"))
+                continue
             if job.attempts >= MAX_ATTEMPTS:
                 job.status = "failed"
                 job.error = f"Abandoned by worker {job.worker_id} {job.attempts} times"
