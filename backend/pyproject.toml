@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipforge"
+version = "0.1.0"
+description = "Turn podcasts into hand-directed vertical short clips."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "python-multipart>=0.0.9",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Phase 1 media + model stack. Kept optional so the skeleton installs anywhere.
+pipeline = [
+    "faster-whisper>=1.0",
+    "yt-dlp>=2024.8.6",
+    "anthropic>=0.70",
+    "scipy>=1.11",
+    "scikit-learn>=1.4",
+]
+# Higher-quality diarization; needs PyTorch and a Hugging Face token.
+pyannote = ["pyannote.audio>=3.1"]
+dev = ["pytest>=8", "ruff>=0.4", "httpx>=0.27"]
+
+[project.scripts]
+clipforge-api = "clipforge.api.app:main"
+clipforge-worker = "clipforge.jobs.worker:main"
+clipforge-check = "clipforge.tools.check_env:main"
+
+[tool.setuptools.packages.find]
+include = ["clipforge*"]
+
+[tool.setuptools.package-data]
+clipforge = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "owner_pc: needs real models, network or the owner's episodes (skipped in CI)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

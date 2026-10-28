@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.env
+data/
+golden/media/
+golden/*.mp4
+golden/*.mp3
+golden/*.wav
+golden/*.m4a

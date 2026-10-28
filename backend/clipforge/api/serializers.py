@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from typing import Any
+
+from clipforge.db import Clip, Job, JobEvent, Project
+
+
+def _iso(dt) -> str | None:
+    return dt.isoformat() + "Z" if dt else None
+
+
+def job_dict(job: Job) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "kind": job.kind,
+        "status": job.status,
+        "project_id": job.project_id,
+        "payload": job.payload,
+        "result": job.result,
+        "qa": job.qa or [],
+        "error": job.error,
+        "attempts": job.attempts,
+        "created_at": _iso(job.created_at),
+        "started_at": _iso(job.started_at),
+        "finished_at": _iso(job.finished_at),
+    }
+
+
+def event_dict(ev: JobEvent) -> dict[str, Any]:
+    return {
+        "id": ev.id,
+        "job_id": ev.job_id,
+        "at": _iso(ev.at),
+        "level": ev.level,
+        "message": ev.message,
+        "progress": ev.progress,
+    }
+
+
+def project_dict(p: Project) -> dict[str, Any]:
+    return {
+        "id": p.id,
+        "name": p.name,
+        "source_type": p.source_type,
+        "source": p.source if p.source_type == "url" else p.source.split("/")[-1],
+        "rights_confirmed": p.rights_confirmed,
+        "status": p.status,
+        "clip_count": p.clip_count,
+        "media_info": p.media_info,
+        "speakers": p.speakers,
+        "host_speaker": p.host_speaker,
+        "host_suggestion": p.host_suggestion,
+        "host_confirmed": p.host_confirmed,
+        "created_at": _iso(p.created_at),
+    }
+
+
+def clip_dict(c: Clip) -> dict[str, Any]:
+    return {"id": c.id, "project_id": c.project_id, "rank": c.rank, "plan": c.plan, "qa": c.qa}
