@@ -141,3 +141,60 @@ export function fmtTime(t: number): string {
   const m = Math.floor(t / 60);
   return `${m}:${(t % 60).toFixed(1).padStart(4, "0")}`;
 }
+
+export type CutInfo = {
+  edge: "start" | "end";
+  src_time: number;
+  requested: number;
+  reason: string;
+  silence_from: number;
+  silence_to: number;
+  extended_by: number;
+};
+
+export type BrollChoice = {
+  source: string;
+  source_id: string;
+  title: string;
+  page_url: string;
+  license: string;
+  width: number;
+  height: number;
+  approved_by: string;
+  flags: string[];
+  verdict: Record<string, unknown>;
+};
+
+export type BrollSlot = {
+  index: number;
+  out_start: number;
+  out_end: number;
+  beat_text: string;
+  queries: string[];
+  named_person: string | null;
+  status: "empty" | "filled" | "weak";
+  weak_reason: string;
+  choice: BrollChoice | null;
+  candidates: BrollChoice[];
+};
+
+export type Spec = {
+  duration?: number;
+  fps: number;
+  width: number;
+  height: number;
+  pieces: { src_start: number; src_end: number }[];
+  cuts: CutInfo[];
+  captions: { text: string; spoken: string; out_start: number; censored: boolean; emphasis: boolean }[];
+  broll: BrollSlot[];
+  host_insert: { out_start: number; out_end: number; reason: string } | null;
+  host_insert_enabled: boolean;
+};
+
+export type ClipDetail = Clip & { spec: Spec | null; jobs: Job[] };
+
+export async function upload<T>(path: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append("file", file);
+  return api<T>(path, { method: "POST", body: form });
+}

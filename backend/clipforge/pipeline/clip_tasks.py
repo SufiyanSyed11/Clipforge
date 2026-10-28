@@ -7,6 +7,7 @@ again.
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import json
 from pathlib import Path
@@ -15,6 +16,7 @@ import numpy as np
 from sqlalchemy import select
 
 from clipforge.app_settings import AppConfig, load_config
+from clipforge.broll.engine import BrollContext
 from clipforge.core import captions, faces, framing, ingest, verify
 from clipforge.core.audio import load_wav48, write_wav
 from clipforge.core.cut import CutConfig, CutEngine, CutError
@@ -28,6 +30,11 @@ from clipforge.models import PickedClip, Transcript
 from clipforge.qa import QAReport
 from clipforge.settings import get_settings
 from clipforge.storage import get_storage
+
+# The running build's B-roll context (with its job logger and cancel check).
+_BROLL_CTX: contextvars.ContextVar[BrollContext | None] = contextvars.ContextVar(
+    "broll_ctx", default=None
+)
 
 
 def clip_dir(project_id: int, clip_id: int) -> Path:
@@ -212,7 +219,88 @@ def plan_spec(
         )
         spec.host_insert = insert
         qa.append(ins_qa)
+
+    # B-roll: beats after the hook, clear of the host insert, filled only by checked footage.
+    spec.broll, broll_qa = plan_broll(spec, clip, project, picked, cfg)
+    qa.append(broll_qa)
     return spec, qa
+
+
+def broll_context(project: Project, cfg: AppConfig, log, cancelled) -> BrollContext:
+    from clipforge.broll import media
+    from clipforge.broll.sources import (
+        LibrarySource,
+        PermittedYouTubeSource,
+        PexelsSource,
+        PixabaySource,
+    )
+    from clipforge.llm import get_vision_provider
+
+    settings = get_settings()
+    data = settings.data_dir
+    sources = [
+        s
+        for s in (
+            PexelsSource(settings.pexels_api_key),
+            PixabaySource(settings.pixabay_api_key),
+            PermittedYouTubeSource(project.broll_sources or [], data / "broll_cache"),
+            LibrarySource(data / "broll_library"),
+        )
+        if s.available()
+    ]
+    vprov = get_vision_provider()
+    vstatus = vprov.check()
+    pdir = get_storage().project_dir(project.id)
+    hashes_file = pdir / "podcast_hashes.json"
+    if hashes_file.exists():
+        hashes = json.loads(hashes_file.read_text(encoding="utf-8"))
+    elif (project.media_info or {}).get("has_video"):
+        hashes = media.podcast_hashes(Path(project.media_path), project.media_info["duration"])
+        hashes_file.write_text(json.dumps(hashes), encoding="utf-8")
+    else:
+        hashes = []
+    return BrollContext(
+        sources=sources,
+        vision=vprov if vstatus.ok else None,
+        reject_rules=cfg.broll_reject_rules,
+        banned=cfg.broll_banned_content,
+        cache=data / "broll_cache",
+        sheets=pdir / "contact_sheets",
+        podcast_hashes=hashes,
+        podcast_url=project.source if project.source_type == "url" else None,
+        podcast_sha1=None,
+        log=log,
+        cancelled=cancelled,
+    )
+
+
+def plan_broll(spec: EditSpec, clip: Clip, project: Project, picked: PickedClip, cfg: AppConfig):
+    from clipforge.broll import beats, engine, queries
+    from clipforge.editspec import BrollSlot
+    from clipforge.llm import get_text_provider
+
+    slots = beats.plan_slots(spec)
+    ctx = _BROLL_CTX.get()
+    if ctx is None:
+        ctx = broll_context(project, cfg, lambda m: None, lambda: False)
+    prev = {s["beat_text"]: BrollSlot.model_validate(s) for s in (clip.spec or {}).get("broll", [])}
+    ctx.previous = prev
+    ctx.decisions = (clip.edits or {}).get("broll") or {}
+    need_queries = [s for s in slots if s.beat_text not in prev]
+    if need_queries:
+        provider = get_text_provider()
+        st = provider.check()
+        filled, method = queries.generate(
+            need_queries,
+            picked.plan.hook + " " + picked.plan.payoff,
+            picked.plan.broll_beats,
+            provider if st.ok else None,
+            ctx.log,
+        )
+        by_i = {s.index: s for s in filled}
+        slots = [by_i.get(s.index, s) for s in slots]
+        ctx.log(f"B-roll search terms: {method}")
+    return engine.fill_slots(slots, ctx)
 
 
 @task("build_clip")
@@ -236,7 +324,13 @@ def build_clip(ctx: JobContext) -> TaskResult:
         wav = audio48_path(project.id, Path(project.media_path))
         audio48 = _loaded_audio(str(wav), wav.stat().st_mtime)
         ctx.log(f"Clip #{clip.rank}: cutting in measured silence")
-        spec, plan_qa = plan_spec(clip, project, transcript, cfg, audio48)
+        token = _BROLL_CTX.set(broll_context(project, cfg, lambda m: ctx.log(m), ctx.cancelled))
+        try:
+            spec, plan_qa = plan_spec(clip, project, transcript, cfg, audio48)
+        except InterruptedError:
+            raise TaskCancelled() from None
+        finally:
+            _BROLL_CTX.reset(token)
         qa += plan_qa
         ctx.check_cancelled()
 

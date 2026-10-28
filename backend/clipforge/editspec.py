@@ -101,6 +101,8 @@ class BrollChoice(BaseModel):
     rules_hash: str = ""
     approved_by: Literal["vision", "owner", ""] = ""
     flags: list[str] = Field(default_factory=list)
+    # Set only after the URL, file-hash and frame-hash checks against the podcast passed.
+    podcast_checked: bool = False
 
 
 class BrollSlot(BaseModel):

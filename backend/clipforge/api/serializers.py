@@ -52,6 +52,7 @@ def project_dict(p: Project) -> dict[str, Any]:
         "host_speaker": p.host_speaker,
         "host_suggestion": p.host_suggestion,
         "host_confirmed": p.host_confirmed,
+        "broll_sources": p.broll_sources or [],
         "created_at": _iso(p.created_at),
     }
 

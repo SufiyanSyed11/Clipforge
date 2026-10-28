@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     anthropic_effort: str = "high"
     anthropic_fallbacks: str = "default"  # "default" or "off"
 
+    # Free stock-footage API keys (https://www.pexels.com/api/, https://pixabay.com/api/docs/).
+    pexels_api_key: str = ""
+    pixabay_api_key: str = ""
+
     # Video encoder: auto (NVENC if the GPU supports it, else libx264) | h264_nvenc | libx264
     render_encoder: str = "auto"
 

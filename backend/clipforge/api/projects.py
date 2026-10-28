@@ -124,6 +124,36 @@ def confirm_host(project_id: int, body: HostIn) -> dict[str, Any]:
     return get_project(project_id)
 
 
+class BrollSourceIn(BaseModel):
+    url: str
+    rights_confirmed: bool
+    license: str = ""
+
+
+@router.put("/{project_id}/broll-sources")
+def set_broll_sources(project_id: int, body: list[BrollSourceIn]) -> dict[str, Any]:
+    """Permitted YouTube footage for this project's B-roll. Every entry needs rights."""
+    entries = []
+    for e in body:
+        if not e.rights_confirmed:
+            raise HTTPException(422, f"Confirm you have permission to use {e.url}")
+        try:
+            url = validate_url(e.url)
+        except IngestError as err:
+            raise HTTPException(422, str(err)) from err
+        entries.append({"url": url, "rights_confirmed": True, "license": e.license[:200]})
+    with session_scope() as s:
+        p = s.get(Project, project_id)
+        if not p:
+            raise HTTPException(404, "Project not found")
+        if p.source_type == "url" and any(
+            x["url"].rstrip("/") == p.source.rstrip("/") for x in entries
+        ):
+            raise HTTPException(422, "The podcast itself can't be used as B-roll")
+        p.broll_sources = entries
+    return get_project(project_id)
+
+
 @router.get("/{project_id}/clips")
 def get_clips(project_id: int) -> list[dict[str, Any]]:
     with session_scope() as s:

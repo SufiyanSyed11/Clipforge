@@ -46,6 +46,36 @@ class FakeLLM:
         return json.dumps(handler(user))
 
     @staticmethod
+    def _answer_broll_queries(user: str) -> dict:
+        beats = re.findall(r"^(\d+)\. (.*)$", user, re.M)
+        out = []
+        for idx, text in beats:
+            words = [w.strip(",.?!").lower() for w in text.split() if len(w) > 3][:2]
+            out.append(
+                {
+                    "index": int(idx),
+                    "queries": [" ".join(words) or "city skyline", "stadium crowd"],
+                    "named_person": None,
+                    "event": None,
+                }
+            )
+        return {"beats": out}
+
+    @staticmethod
+    def _answer_broll_vision(user: str) -> dict:
+        title = re.search(r"Footage title/tags: (.*)", user)
+        bad = title and re.search(r"watermark|logo|podcast", title.group(1), re.I)
+        return {
+            "description": "test double: judged from the title only",
+            "issues": ["watermarks"] if bad else [],
+            "banned_seen": [],
+            "people_visible": 0,
+            "matches_beat": True,
+            "consistent_with_named_subject": None,
+            "accept": not bad,
+        }
+
+    @staticmethod
     def _pick(user: str) -> str:
         n = int(re.search(r"N = (\d+)", user).group(1))
         lines = []

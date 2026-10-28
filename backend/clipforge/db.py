@@ -86,6 +86,8 @@ class Project(Base):
     host_speaker: Mapped[str | None] = mapped_column(String(32), nullable=True)
     host_suggestion: Mapped[dict[str, Any] | None] = mapped_column(nullable=True)
     host_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Permitted YouTube B-roll for this project: [{url, rights_confirmed, license}]
+    broll_sources: Mapped[list[Any] | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

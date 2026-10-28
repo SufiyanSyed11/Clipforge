@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -82,11 +82,18 @@ class CaptionFix(BaseModel):
     text: str = Field(min_length=1, max_length=60)
 
 
+class BrollDecision(BaseModel):
+    slot: int = Field(ge=0)
+    action: str = Field(pattern="^(approve|clear|auto)$")
+    candidate: int | None = Field(default=None, ge=0)
+
+
 class EditsIn(BaseModel):
     trims: list[Trim] | None = None
     clear_trims: bool = False
     captions: list[CaptionFix] | None = None
     host_insert: bool | None = None
+    broll: list[BrollDecision] | None = None
 
 
 @router.patch("/{clip_id}/edits")
@@ -118,6 +125,22 @@ def update_edits(clip_id: int, body: EditsIn) -> dict[str, Any]:
             edits["captions"] = fixes
         if body.host_insert is not None:
             edits["host_insert"] = body.host_insert
+        if body.broll:
+            decisions = dict(edits.get("broll") or {})
+            slots = {b["index"]: b for b in (c.spec or {}).get("broll", [])}
+            for d in body.broll:
+                if d.slot not in slots:
+                    raise HTTPException(422, f"No B-roll slot {d.slot}")
+                if d.action == "auto":
+                    decisions.pop(str(d.slot), None)
+                elif d.action == "clear":
+                    decisions[str(d.slot)] = {"action": "clear"}
+                else:
+                    n = len(slots[d.slot].get("candidates", []))
+                    if d.candidate is None or d.candidate >= n:
+                        raise HTTPException(422, f"Slot {d.slot} has {n} candidate(s)")
+                    decisions[str(d.slot)] = {"action": "approve", "candidate": d.candidate}
+            edits["broll"] = decisions
         c.edits = edits
         c.updated_at = utcnow()
         return clip_dict(c, full=True)
@@ -129,6 +152,51 @@ def video(clip_id: int) -> FileResponse:
         c = _clip_or_404(s, clip_id)
         path = _inside_project(c.render_path, c.project_id)
     return FileResponse(path, media_type="video/mp4", filename=f"clip-{clip_id}.mp4")
+
+
+@router.get("/{clip_id}/broll/{slot}/sheet")
+def contact_sheet(clip_id: int, slot: int, candidate: int | None = None) -> FileResponse:
+    """The contact sheet of the chosen shot (or of candidate k) for the review screen."""
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        slots = {b["index"]: b for b in (c.spec or {}).get("broll", [])}
+        project_id = c.project_id
+    if slot not in slots:
+        raise HTTPException(404, "No such slot")
+    b = slots[slot]
+    if candidate is None:
+        path = (b.get("choice") or {}).get("contact_sheet")
+    else:
+        cands = b.get("candidates", [])
+        path = cands[candidate]["contact_sheet"] if candidate < len(cands) else None
+    return FileResponse(_inside_project(path, project_id), media_type="image/jpeg")
+
+
+@router.post("/{clip_id}/broll/{slot}/upload")
+def upload_cover(clip_id: int, slot: int, file: UploadFile = File(...)) -> dict[str, Any]:
+    """The owner's own footage for a slot (manual cover). Checked on the next build."""
+    if Path(file.filename or "").suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm"):
+        raise HTTPException(422, "Upload a video file (.mp4, .mov, .mkv, .webm)")
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        if slot not in {b["index"] for b in (c.spec or {}).get("broll", [])}:
+            raise HTTPException(404, "No such slot")
+        project_id = c.project_id
+    folder = get_storage().project_dir(project_id) / "manual_broll"
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"clip{clip_id}_slot{slot}{Path(file.filename).suffix.lower()}"
+    with dest.open("wb") as out:
+        while chunk := file.file.read(1 << 20):
+            out.write(chunk)
+    with session_scope() as s:
+        c = s.get(Clip, clip_id)
+        edits = dict(c.edits or {})
+        decisions = dict(edits.get("broll") or {})
+        decisions[str(slot)] = {"action": "manual", "path": str(dest)}
+        edits["broll"] = decisions
+        c.edits = edits
+        c.updated_at = utcnow()
+        return clip_dict(c, full=True)
 
 
 @router.get("/{clip_id}/waveform")

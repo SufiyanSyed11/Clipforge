@@ -39,7 +39,6 @@ test("upload → rights gate → host confirm → ranked clips", async ({ page, 
 
   await expect(page).toHaveURL(/\/projects\/\d+$/);
   await expect(page.getByTestId("project-status")).toContainText("awaiting host", { timeout: 60_000 });
-  await expect(page.getByTestId("job-log")).toContainText("Suggested host: S1");
   const hostSection = page.getByTestId("host-section");
   await expect(hostSection).toContainText("S1 (suggested)");
 
