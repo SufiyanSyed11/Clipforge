@@ -409,4 +409,100 @@ def build_clip(ctx: JobContext) -> TaskResult:
         )[:2000],
     )
     ctx.log("Gate passed" if passed else "Gate FAILED: see the QA checklist", progress=1.0)
+    with session_scope() as s:
+        needs_copy = s.get(Clip, clip_id).copy_pack is None
+    if needs_copy:
+        from clipforge.jobs import queue
+
+        queue.enqueue("write_copy", {"clip_id": clip_id}, project_id=project.id)
     return TaskResult(result={"clip_id": clip_id, "verified": passed}, qa=qa)
+
+
+def _clip_and_project(clip_id: int) -> tuple[Clip, Project]:
+    with session_scope() as s:
+        clip = s.get(Clip, clip_id)
+        if clip is None:
+            raise TaskError(f"Clip {clip_id} not found")
+        return clip, s.get(Project, clip.project_id)
+
+
+@task("write_copy")
+def write_copy_task(ctx: JobContext) -> TaskResult:
+    from clipforge.core import copywriter
+    from clipforge.core.learn import learning_context
+    from clipforge.llm import get_text_provider
+
+    clip_id = int(ctx.payload["clip_id"])
+    clip, _project = _clip_and_project(clip_id)
+    if not clip.spec:
+        raise TaskError("Build the clip before writing its copy")
+    spec = EditSpec.model_validate(clip.spec)
+    picked = PickedClip.model_validate(clip.plan)
+    cfg = load_config()
+    provider = get_text_provider()
+    status = provider.check()
+    if not status.ok:
+        raise TaskError(f"Copy writer unavailable: {status.message()}")
+    ctx.log(f"Writing the copy pack with {provider.name}:{provider.model}")
+    try:
+        pack, qa = copywriter.write_copy(
+            provider,
+            " ".join(c.spoken for c in spec.captions),
+            picked.plan.hook,
+            picked.plan.payoff,
+            picked.plan.title_options,
+            cfg.brand_tag,
+            cfg.credit_line,
+            lambda m: ctx.log(m),
+            learning=learning_context(),
+        )
+    except copywriter.CopyInvalid as e:
+        raise TaskError(str(e)) from e
+    _set(clip_id, copy_pack=pack.model_dump())
+    return TaskResult(result={"title": pack.title}, qa=[qa])
+
+
+@task("export_clip")
+def export_clip(ctx: JobContext) -> TaskResult:
+    from clipforge.broll import engine
+    from clipforge.core import copywriter, export
+
+    clip_id = int(ctx.payload["clip_id"])
+    clip, project = _clip_and_project(clip_id)
+    if not clip.spec or not clip.render_path:
+        raise TaskError("Build the clip before exporting it")
+    spec = EditSpec.model_validate(clip.spec)
+    cfg = load_config()
+    bctx = broll_context(project, cfg, lambda m: ctx.log(m), ctx.cancelled)
+    reverify = engine.reverify(spec.broll, bctx)
+    pack = copywriter.CopyPack.model_validate(clip.copy_pack) if clip.copy_pack else None
+    reasons = export.export_gate(
+        clip.verified, clip.qa or [], reverify, pack, bool(clip.render_path)
+    )
+    unverified_test = False
+    if reasons:
+        only_gate = all(r.startswith("verification gate failed") for r in reasons)
+        if get_settings().fake_models and only_gate and pack is not None:
+            # Plumbing tests can't pass the gate (no real models); never in real runs.
+            unverified_test = True
+            ctx.log("FAKE_MODELS: exporting an UNVERIFIED TEST pack", level="warn")
+        else:
+            raise TaskError("Export blocked: " + "; ".join(reasons), [reverify])
+    d = clip_dir(project.id, clip_id)
+    folder, zpath = export.write_pack(
+        get_settings().data_dir / "exports",
+        project.name,
+        clip.rank,
+        spec,
+        Path(clip.render_path),
+        pack,
+        (clip.qa or []) + [reverify.to_dict()],
+        d,
+        unverified_test=unverified_test,
+    )
+    _set(clip_id, export_path=str(zpath))
+    ctx.log(f"Export pack: {folder}")
+    return TaskResult(
+        result={"folder": str(folder), "zip": str(zpath), "unverified_test": unverified_test},
+        qa=[reverify],
+    )

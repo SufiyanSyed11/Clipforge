@@ -13,6 +13,7 @@ from sqlalchemy import select
 from clipforge.api.serializers import clip_dict, job_dict
 from clipforge.db import Clip, Job, session_scope, utcnow
 from clipforge.jobs import queue
+from clipforge.settings import get_settings
 from clipforge.storage import get_storage
 
 router = APIRouter(prefix="/api/clips", tags=["clips"])
@@ -144,6 +145,70 @@ def update_edits(clip_id: int, body: EditsIn) -> dict[str, Any]:
         c.edits = edits
         c.updated_at = utcnow()
         return clip_dict(c, full=True)
+
+
+def _enqueue_for_clip(clip_id: int, kind: str) -> dict[str, Any]:
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        if _active_job(s, clip_id, (kind,)):
+            raise HTTPException(409, "Already queued for this clip")
+        project_id = c.project_id
+    job_id = queue.enqueue(kind, {"clip_id": clip_id}, project_id=project_id)
+    with session_scope() as s:
+        return job_dict(s.get(Job, job_id))
+
+
+@router.post("/{clip_id}/copy")
+def regenerate_copy(clip_id: int) -> dict[str, Any]:
+    return _enqueue_for_clip(clip_id, "write_copy")
+
+
+class CopyIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    youtube_description: str = Field(max_length=5000)
+    instagram_caption: str = Field(max_length=2200)
+    instagram_tags: list[str] = Field(max_length=30)
+    x_post: str = Field(max_length=500)
+
+
+@router.put("/{clip_id}/copy")
+def edit_copy(clip_id: int, body: CopyIn) -> dict[str, Any]:
+    """Owner edits to the copy pack; the same rules apply (one emoji in the title, max 5
+    tags with the brand tag first, no emojis on X, ...)."""
+    from clipforge.app_settings import load_config
+    from clipforge.core.copywriter import CopyInvalid, normalize
+
+    cfg = load_config()
+    try:
+        pack = normalize(body.model_dump(), cfg.brand_tag, cfg.credit_line)
+    except CopyInvalid as e:
+        raise HTTPException(422, str(e)) from e
+    pack.edited = True
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        pack.generated_by = (c.copy_pack or {}).get("generated_by", "owner")
+        c.copy_pack = pack.model_dump()
+        c.updated_at = utcnow()
+        return clip_dict(c, full=True)
+
+
+@router.post("/{clip_id}/export")
+def export(clip_id: int) -> dict[str, Any]:
+    return _enqueue_for_clip(clip_id, "export_clip")
+
+
+@router.get("/{clip_id}/export")
+def download_export(clip_id: int) -> FileResponse:
+    with session_scope() as s:
+        c = _clip_or_404(s, clip_id)
+        path = c.export_path
+    if not path:
+        raise HTTPException(404, "Not exported yet")
+    p = Path(path).resolve()
+    root = (get_settings().data_dir / "exports").resolve()
+    if root not in p.parents or not p.exists():
+        raise HTTPException(404, "Export file not available")
+    return FileResponse(p, media_type="application/zip", filename=p.name)
 
 
 @router.get("/{clip_id}/video")

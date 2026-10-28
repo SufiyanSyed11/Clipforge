@@ -100,7 +100,7 @@ def plan_camera(
         s = analysis["samples"][sample_index(analysis, src)]
         rejected_seen += sum(1 for f in s["faces"] if f.get("rejected"))
         face, why = choose_subject(s, speaker_at(transcript, src), ident)
-        key = why.split(" ")[0]
+        key = "centre crop (no face)" if face is None else why.split(" speaker ")[0]
         reasons[key] = reasons.get(key, 0) + 1
         cut = False
         if not keys:
@@ -141,10 +141,12 @@ def plan_camera(
         )
         t += KEY_STEP
     cuts = sum(k.cut for k in keys)
+    n = max(len(keys), 1)
     qa.check(
         "face-tracked framing",
-        reasons.get("no", 0) < len(keys) * 0.5,
-        ", ".join(f"{k}: {v}" for k, v in sorted(reasons.items())) + f"; {cuts} reframe cut(s)",
+        reasons.get("centre crop (no face)", 0) < n * 0.5,
+        ", ".join(f"{k} {v * 100 // n}%" for k, v in sorted(reasons.items()))
+        + f"; {cuts} reframe cut(s)",
         severity="warn",
     )
     gaps = [b - a for a, b in zip(person_cuts, person_cuts[1:], strict=False)]

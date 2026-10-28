@@ -110,8 +110,15 @@ export default function ClipCard({ clip, onChange }: { clip: Clip; onChange?: ()
           </ul>
         </div>
 
+        {clip.copy_pack && (
+          <div className="rounded border border-ink-700 p-2">
+            <p className="font-semibold">{String(clip.copy_pack.title)}</p>
+            <p className="text-xs text-gray-400">{(clip.copy_pack.instagram_tags as string[]).join(" ")}</p>
+          </div>
+        )}
+
         <div>
-          <p className="text-gray-400">Titles</p>
+          <p className="text-gray-400">Title ideas</p>
           <ul className="list-disc pl-5">
             {p.title_options.map((t) => (
               <li key={t}>{t}</li>

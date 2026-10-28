@@ -71,7 +71,15 @@ def create_app() -> FastAPI:
         except ValueError as e:
             text = {"ok": False, "provider": settings.llm_provider, "detail": str(e)}
         vision = get_vision_provider().check().to_dict()
-        return {"text": text, "vision": vision}
+        return {
+            "text": text,
+            "vision": vision,
+            # Only whether keys are set; key values never leave the server.
+            "stock": {
+                "pexels": bool(settings.pexels_api_key),
+                "pixabay": bool(settings.pixabay_api_key),
+            },
+        }
 
     @app.get("/api/settings")
     def get_app_settings() -> dict[str, Any]:

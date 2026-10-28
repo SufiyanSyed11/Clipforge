@@ -13,7 +13,7 @@ export type QAReport = { step: string; checks: QACheck[]; passed: boolean };
 export type Job = {
   id: number;
   kind: string;
-  status: "queued" | "running" | "done" | "failed";
+  status: "queued" | "running" | "done" | "failed" | "cancelled" | "cancel_requested";
   project_id: number | null;
   payload: Record<string, unknown>;
   result: Record<string, unknown> | null;

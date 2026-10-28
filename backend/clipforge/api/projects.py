@@ -154,6 +154,23 @@ def set_broll_sources(project_id: int, body: list[BrollSourceIn]) -> dict[str, A
     return get_project(project_id)
 
 
+@router.post("/{project_id}/export")
+def export_ready_clips(project_id: int) -> dict[str, Any]:
+    """Queue an export pack for every clip that passed the gate."""
+    with session_scope() as s:
+        if not s.get(Project, project_id):
+            raise HTTPException(404, "Project not found")
+        ready = [
+            c.id
+            for c in s.scalars(
+                select(Clip).where(Clip.project_id == project_id).order_by(Clip.rank)
+            )
+            if c.status == "ready"
+        ]
+    jobs = [queue.enqueue("export_clip", {"clip_id": cid}, project_id=project_id) for cid in ready]
+    return {"queued": len(jobs), "clip_ids": ready}
+
+
 @router.get("/{project_id}/clips")
 def get_clips(project_id: int) -> list[dict[str, Any]]:
     with session_scope() as s:

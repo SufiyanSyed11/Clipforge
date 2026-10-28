@@ -76,6 +76,17 @@ class FakeLLM:
         }
 
     @staticmethod
+    def _answer_copy_pack(user: str) -> dict:
+        return {
+            "title": 'He Turned Down $2M: "You Can\'t Buy This Moment" 😮',
+            "youtube_description": "Test-double copy 🔥\nWould you have taken the money? "
+            "Tell us in the comments 👇",
+            "instagram_caption": "Test-double caption. You can't buy this moment.",
+            "instagram_tags": ["#podcast", "#motivation", "#sports", "#money", "#extra"],
+            "x_post": "Test-double post about turning down two million dollars.",
+        }
+
+    @staticmethod
     def _pick(user: str) -> str:
         n = int(re.search(r"N = (\d+)", user).group(1))
         lines = []

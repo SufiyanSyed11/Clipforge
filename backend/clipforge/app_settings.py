@@ -26,6 +26,8 @@ class StylePreset(BaseModel):
 class AppConfig(BaseModel):
     style: StylePreset = Field(default_factory=StylePreset)
     brand_tag: str = "#DoubleCoverage"
+    # Added to descriptions/captions only if set (the spec: no credit line unless added).
+    credit_line: str = ""
     logo_path: str | None = None
     # Owner decision 3: alternative seam first, bleep only as a last resort.
     profanity_mode: Literal["prefer_alternative_then_bleep", "bleep", "allow"] = (

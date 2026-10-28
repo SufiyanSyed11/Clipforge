@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import ClipCard from "@/components/ClipCard";
 import JobLog from "@/components/JobLog";
+import JobsHistory from "@/components/JobsHistory";
 import QAChecklist from "@/components/QAChecklist";
 import { api, type Clip, type Project } from "@/lib/api";
 
@@ -141,6 +142,19 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
         </details>
       )}
 
+      {project.status === "clips_ready" && clips.some((c) => c.status === "ready") && (
+        <button
+          onClick={async () => {
+            const r = await api<{ queued: number }>(`/api/projects/${params.id}/export`, { method: "POST" });
+            setError(r.queued ? null : "No verified clips to export");
+            load();
+          }}
+          className="rounded bg-accent px-4 py-2 text-sm font-semibold text-black"
+        >
+          Export all verified clips
+        </button>
+      )}
+
       {project.status === "clips_ready" && (
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">
@@ -152,6 +166,15 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
             <ClipCard key={c.id} clip={c} onChange={load} />
           ))}
         </section>
+      )}
+
+      {project.jobs && project.jobs.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-sm text-gray-400">History ({project.jobs.length} jobs)</summary>
+          <div className="mt-2">
+            <JobsHistory jobs={project.jobs} onChange={load} />
+          </div>
+        </details>
       )}
     </div>
   );

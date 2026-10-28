@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import BrollReview from "@/components/BrollReview";
+import CopyPackEditor from "@/components/CopyPackEditor";
 import JobLog from "@/components/JobLog";
 import QAChecklist from "@/components/QAChecklist";
 import Waveform from "@/components/Waveform";
@@ -39,6 +40,16 @@ export default function ClipEditor({ params }: { params: { id: string; clipId: s
     try {
       setClip({ ...(await api<ClipDetail>(`/api/clips/${clipId}/edits`, { method: "PATCH", body: JSON.stringify(body) })), jobs: clip?.jobs ?? [] });
       setPending(true);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function exportClip() {
+    setError(null);
+    try {
+      await api(`/api/clips/${clipId}/export`, { method: "POST" });
+      await load();
     } catch (e) {
       setError((e as Error).message);
     }
@@ -191,6 +202,41 @@ export default function ClipEditor({ params }: { params: { id: string; clipId: s
           </label>
         </section>
       )}
+
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">Copy pack</h2>
+        <CopyPackEditor
+          clipId={clipId}
+          pack={clip.copy_pack as never}
+          onSaved={load}
+        />
+      </section>
+
+      <section className="space-y-2" data-testid="export-section">
+        <h2 className="text-lg font-semibold">Export</h2>
+        <p className="text-sm text-gray-400">
+          Exports only clips that passed the verification gate, with B-roll checked against your current
+          rules and a copy pack. The pack holds the video, transcript, shot list, captions, copy and QA report.
+        </p>
+        <div className="flex items-center gap-3">
+          <button onClick={exportClip} disabled={building} className="rounded bg-accent px-3 py-1 text-sm font-semibold text-black disabled:opacity-40">
+            Export pack
+          </button>
+          {clip.has_export && (
+            <a href={`${API_URL}/api/clips/${clipId}/export`} className="text-sm text-accent underline" data-testid="download-export">
+              Download .zip
+            </a>
+          )}
+        </div>
+        {(() => {
+          const last = clip.jobs.find((j) => j.kind === "export_clip");
+          if (!last) return null;
+          if (last.status === "failed") return <p className="text-sm text-red-400">{last.error}</p>;
+          if (last.status === "done" && (last.result as { unverified_test?: boolean })?.unverified_test)
+            return <p className="text-sm text-orange-300">Test export (FAKE_MODELS): marked UNVERIFIED-TEST.</p>;
+          return <p className="text-xs text-gray-500">last export: {last.status}</p>;
+        })()}
+      </section>
 
       {spec && (
         <section className="space-y-2">
