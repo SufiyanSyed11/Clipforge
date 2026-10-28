@@ -5,6 +5,9 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
   timeout: 120_000,
+  // The tests share one API + job worker; in parallel, one test's clip builds queue ahead of
+  // another's export and its timeouts measure queue contention instead of the app.
+  workers: 1,
   use: {
     baseURL: process.env.WEB_URL ?? "http://localhost:3000",
     launchOptions: process.env.PW_CHROMIUM_PATH

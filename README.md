@@ -6,6 +6,8 @@ ready-to-post vertical short clips.
 - Spec: [docs/SPEC.md](docs/SPEC.md)
 - Architecture, decisions and acceptance criteria: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Phase reports: [docs/reports/](docs/reports/)
+- **Final report** (features, tests, limitations, setup, validation steps): [docs/FINAL_REPORT.md](docs/FINAL_REPORT.md)
+- Hardware, performance, disk, security: [docs/DEPLOY.md](docs/DEPLOY.md)
 - Rules for Claude Code: [CLAUDE.md](CLAUDE.md)
 
 ## Run it on Windows
@@ -61,6 +63,6 @@ scripts/dev.sh
 ```bash
 .venv/bin/pytest -q backend
 .venv/bin/ruff check backend
-cd web && npm run typecheck && npm run build
-cd web && npx playwright test   # needs the stack running
+cd web && npm run lint && npm run typecheck && npm run build
+cd web && npx playwright test   # needs the stack running (FAKE_MODELS=true for test doubles)
 ```

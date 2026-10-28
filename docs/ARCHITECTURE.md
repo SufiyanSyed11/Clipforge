@@ -1,8 +1,8 @@
 # ClipForge architecture and phased build plan
 
-Status: **approved by the owner with the decisions in section 0.** Phase 0 and Phase 1 are
-being built. Later phases still follow the per-phase gate: each phase ends with a QA report and
-the owner's review before the next one starts.
+Status: **approved by the owner with the decisions in section 0.** All six phases are built;
+the real-podcast quality bar is still to be run (see `docs/FINAL_REPORT.md`). Each phase ended
+with a QA report; the owner's review of the golden run is the remaining gate.
 
 ## 0. Owner decisions (binding)
 
@@ -184,8 +184,10 @@ selection is checked against it, and the export gate re-verifies the chosen foot
 Unchanged from the spec, plus decision 5 (`#DoubleCoverage` default, logo upload in Settings).
 
 ### Phase 6: Learning loop and polish
-Unchanged from the spec, plus the cloud deployment path (Postgres, object storage, managed
-queue) behind the interfaces from section 1.
+Unchanged from the spec. Built: learning loop (YouTube OAuth or CSV), posting helpers and
+private scheduled uploads, storage management, security hardening. The cloud path (Postgres,
+object storage, auth) is documented in `docs/DEPLOY.md` but not built: the app is
+single-user and local-only.
 
 ## 6. Risks and honest limits
 

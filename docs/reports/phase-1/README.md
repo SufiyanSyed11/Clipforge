@@ -87,6 +87,9 @@ labelling it as not a real result.
 
 ## Owner steps for P1-9 to P1-11 (Windows)
 
+> Superseded: the local model (Ollama) replaced the API key, and the golden tool now runs
+> the full pipeline. Use the steps in [docs/FINAL_REPORT.md](../../FINAL_REPORT.md), section 6.
+
 1. Put your key in `.env`: `ANTHROPIC_API_KEY=...`
 2. `.\.venv\Scripts\clipforge-check.exe` and check which Whisper model/device it picked.
    With an NVIDIA GPU that shows "CTranslate2 can't use CUDA", install the CUDA 12 cuBLAS
