@@ -16,6 +16,7 @@ from clipforge.app_settings import load_config
 from clipforge.core import diarize, ingest, pick, transcribe
 from clipforge.db import Clip, Project, session_scope
 from clipforge.jobs.registry import JobContext, TaskError, TaskResult, task
+from clipforge.llm import get_text_provider
 from clipforge.models import Transcript
 from clipforge.qa import QAReport
 from clipforge.settings import get_settings
@@ -42,6 +43,15 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
+
+
+def free_llm_vram(ctx: JobContext) -> None:
+    """Whisper and a local LLM don't both fit in 6 GB of VRAM: ask Ollama to unload first."""
+    provider = get_text_provider()
+    unload = getattr(provider, "unload", None)
+    if unload:
+        unload()
+        ctx.log("Asked Ollama to free GPU memory before transcription")
 
 
 def diarization_backend(settings, env_report: dict | None) -> str:
@@ -108,6 +118,8 @@ def run_ingest_and_transcribe(
         ctx.log("FAKE_MODELS: using the stub transcript (plumbing test, not a real result)")
         t = transcribe.fake_transcript(info.duration)
     else:
+        if cfg.device == "cuda":
+            free_llm_vram(ctx)
         t = transcribe.transcribe_file(wav, cfg, lambda m, prog: ctx.log(m, progress=prog))
     _atomic_write(raw_path, t.model_dump_json())
     qa.append(transcribe.transcript_qa(t))
@@ -154,6 +166,7 @@ def process_project(ctx: JobContext) -> TaskResult:
     pid = ctx.project_id
     _update(pid, status="processing")
     try:
+        require_text_provider(ctx)
         t, qa = run_ingest_and_transcribe(pid, ctx)
     except ingest.RightsNotConfirmed as e:
         _update(pid, status="failed")
@@ -172,16 +185,14 @@ def process_project(ctx: JobContext) -> TaskResult:
     )
 
 
-def make_picker_client(transcript: Transcript) -> pick.PickerClient:
-    settings = get_settings()
-    if settings.fake_models:
-        return pick.FakePickerClient(transcript)
-    return pick.ClaudePickerClient(
-        model=settings.picker_model,
-        effort=settings.picker_effort,
-        fallbacks=settings.picker_fallbacks,
-        api_key=settings.anthropic_api_key or None,
-    )
+def require_text_provider(ctx: JobContext):
+    """Fail fast (before any long step) if the clip-picking model can't be used."""
+    provider = get_text_provider()
+    status = provider.check()
+    if not status.ok:
+        raise TaskError(f"Clip picker unavailable: {status.message()}")
+    ctx.log(("" if status.real else "TEST DOUBLE: ") + f"Clip picker: {status.detail}")
+    return provider
 
 
 @task("pick_clips")
@@ -197,10 +208,15 @@ def pick_clips_task(ctx: JobContext) -> TaskResult:
     cfg = load_config()
     settings = get_settings()
     try:
+        provider = require_text_provider(ctx)
+    except TaskError:
+        _update(pid, status="failed")
+        raise
+    try:
         result = pick.pick_clips(
             t,
             p.host_speaker,
-            make_picker_client(t),
+            provider,
             lambda m: ctx.log(m),
             n=p.clip_count,
             style=cfg.style.model_dump(),
@@ -218,6 +234,9 @@ def pick_clips_task(ctx: JobContext) -> TaskResult:
             {
                 "host_speaker": p.host_speaker,
                 "prompt_version": settings.picker_prompt_version,
+                "provider": result.provider,
+                "model": result.model,
+                "real": result.real,
                 "clips": [c.model_dump() for c in result.clips],
                 "rejected": result.rejected,
             },

@@ -1,4 +1,5 @@
-"""Clip picking with the Claude API, validated and held to the hard rules in code.
+"""Clip picking with a language model (local Ollama by default), validated and held to the
+hard rules in code.
 
 The model proposes; this module enforces: schema validation (retry, then fail loudly), the
 30 s hard max (over-long clips are rejected, never trimmed silently), the 18-30 s window
@@ -7,16 +8,16 @@ The model proposes; this module enforces: schema validation (retry, then fail lo
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import resources
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from clipforge.models import ClipPlan, PickedClip, RiskFlag, Transcript
+from clipforge.llm.base import LLMError, LLMProvider, estimate_tokens
+from clipforge.models import ClipPlan, PickedClip, RiskFlag, Segment, Transcript
 from clipforge.qa import QAReport
 
 HARD_MAX_SECONDS = 30.0
@@ -139,7 +140,9 @@ def load_prompt(version: str) -> str:
         raise PickerError(f"Prompt version '{version}' not found ({name})") from e
 
 
-def format_transcript(t: Transcript, host_speaker: str | None) -> str:
+def format_transcript(
+    t: Transcript, host_speaker: str | None, segments: list[Segment] | None = None
+) -> str:
     def label(sp: str | None) -> str:
         if not sp:
             return "SPEAKER"
@@ -148,134 +151,34 @@ def format_transcript(t: Transcript, host_speaker: str | None) -> str:
         return sp
 
     return "\n".join(
-        f"[{s.start:.2f}-{s.end:.2f}] {label(s.speaker)}: {s.text}" for s in t.segments
+        f"[{s.start:.2f}-{s.end:.2f}] {label(s.speaker)}: {s.text}"
+        for s in (t.segments if segments is None else segments)
     )
 
 
-def build_user_message(t: Transcript, host_speaker: str | None, n: int, style: dict) -> str:
+def build_user_message(
+    t: Transcript,
+    host_speaker: str | None,
+    n: int,
+    style: dict,
+    segments: list[Segment] | None = None,
+    extra_context: str = "",
+) -> str:
+    part = ""
+    if segments is not None and segments:
+        part = (
+            f"This is one part of the episode ({segments[0].start:.0f}-{segments[-1].end:.0f} s); "
+            "pick only from it.\n"
+        )
     return (
         f"N = {n}\n"
         f"Clip length: {style.get('min_clip_seconds', 18)}-"
         f"{min(style.get('max_clip_seconds', 30), HARD_MAX_SECONDS)} s, hard max 30 s.\n"
-        f"Episode length: {t.duration:.1f} s. Language: {t.language or 'unknown'}.\n\n"
-        f"<transcript>\n{format_transcript(t, host_speaker)}\n</transcript>"
+        f"Episode length: {t.duration:.1f} s. Language: {t.language or 'unknown'}.\n"
+        f"{part}"
+        + (f"\n{extra_context.strip()}\n" if extra_context.strip() else "")
+        + f"\n<transcript>\n{format_transcript(t, host_speaker, segments)}\n</transcript>"
     )
-
-
-# ---- model clients --------------------------------------------------------------------------
-
-
-class PickerClient(Protocol):
-    def complete(self, system: str, user: str, log: Logger) -> str:
-        """Return the model's JSON text. Raise PickerError on refusal/truncation."""
-        ...
-
-
-class ClaudePickerClient:
-    def __init__(
-        self,
-        model: str,
-        effort: str = "high",
-        fallbacks: str = "default",
-        client: Any | None = None,
-        api_key: str | None = None,
-    ) -> None:
-        if client is None:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-        self.client = client
-        self.model = model
-        self.effort = effort
-        self.use_fallbacks = fallbacks == "default"
-
-    def _request(self, system: str, user: str, with_fallbacks: bool):
-        kwargs: dict[str, Any] = dict(
-            model=self.model,
-            max_tokens=64000,
-            system=system,
-            thinking={"type": "adaptive"},
-            output_config={
-                "effort": self.effort,
-                "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA},
-            },
-            messages=[{"role": "user", "content": user}],
-        )
-        if with_fallbacks:
-            # A request the model declines is re-run on a fallback model in the same call.
-            stream = self.client.beta.messages.stream(
-                betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs
-            )
-        else:
-            stream = self.client.messages.stream(**kwargs)
-        with stream as s:
-            return s.get_final_message()
-
-    def complete(self, system: str, user: str, log: Logger) -> str:
-        import anthropic
-
-        try:
-            msg = self._request(system, user, self.use_fallbacks)
-        except anthropic.BadRequestError as e:
-            if not self.use_fallbacks or "fallback" not in str(e).lower():
-                raise PickerError(f"Claude API rejected the request: {e}") from e
-            log("Server-side fallback not accepted for this request; retrying without it")
-            msg = self._request(system, user, False)
-        except anthropic.AuthenticationError as e:
-            raise PickerError("Claude API key missing or invalid (ANTHROPIC_API_KEY)") from e
-        except anthropic.RateLimitError as e:
-            raise PickerError(f"Claude API rate limit: {e}") from e
-        except anthropic.APIStatusError as e:
-            raise PickerError(f"Claude API error {e.status_code}: {e}") from e
-        except anthropic.APIConnectionError as e:
-            raise PickerError(f"Can't reach the Claude API: {e}") from e
-
-        if msg.stop_reason == "refusal":
-            details = getattr(msg, "stop_details", None)
-            raise PickerError(f"The model declined this transcript ({details})")
-        if msg.stop_reason == "max_tokens":
-            raise PickerError("The model's answer was cut off (max_tokens)")
-        text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
-        served_by = getattr(msg, "model", self.model)
-        if served_by and served_by != self.model:
-            log(f"Answered by fallback model {served_by}")
-        return text
-
-
-class FakePickerClient:
-    """Test stub (FAKE_MODELS): picks consecutive transcript windows of ~20 s."""
-
-    def __init__(self, transcript: Transcript) -> None:
-        self.t = transcript
-
-    def complete(self, system: str, user: str, log: Logger) -> str:
-        n = int(re.search(r"N = (\d+)", user).group(1))
-        clips = []
-        segs = self.t.segments
-        i = 0
-        while i < len(segs) and len(clips) < n:
-            start = segs[i].start
-            j = i
-            while j + 1 < len(segs) and segs[j + 1].end - start <= 24:
-                j += 1
-            if segs[j].end - start >= 18:
-                text = " ".join(s.text for s in segs[i : j + 1])
-                clips.append(
-                    {
-                        "segments": [{"start": start, "end": segs[j].end, "text": text}],
-                        "hook": segs[i].text,
-                        "context": segs[min(i + 1, j)].text,
-                        "payoff": segs[j].text,
-                        "virality_score": max(1, 8 - len(clips)),
-                        "reasons": ["stub reason 1", "stub reason 2", "stub reason 3"],
-                        "title_options": ["Stub title A 🔥", '"Stub quote" 😮', "Stub C 🎯"],
-                        "broll_beats": ["stub beat"],
-                        "risk_flags": [],
-                        "improvements": "stub",
-                    }
-                )
-            i = j + 1
-        return json.dumps({"clips": clips})
 
 
 # ---- rules ----------------------------------------------------------------------------------
@@ -287,6 +190,10 @@ class PickResult:
     rejected: list[dict[str, Any]] = field(default_factory=list)
     attempts: int = 1
     raw: str = ""
+    provider: str = ""
+    model: str = ""
+    real: bool = True
+    windows: int = 1
 
 
 def _parse(text: str) -> PickOutput:
@@ -397,51 +304,162 @@ def apply_rules(
     return accepted, rejected
 
 
+# Output budget for one picker answer: 8 clips of ~350 tokens each, with headroom.
+PICKER_OUTPUT_TOKENS = 6000
+# Seconds of transcript repeated between neighbouring windows, so a story that crosses a
+# window boundary is still whole in one of them.
+WINDOW_OVERLAP_SECONDS = 60.0
+
+
+def plan_windows(
+    t: Transcript, host_speaker: str | None, budget_tokens: int | None
+) -> list[list[Segment]]:
+    """Split the transcript into windows whose formatted text fits `budget_tokens`."""
+    segs = t.segments
+    whole = estimate_tokens(format_transcript(t, host_speaker))
+    if budget_tokens is None or whole <= budget_tokens:
+        return [segs]
+    if budget_tokens < 500:
+        raise PickerError(
+            "The model's context is too small for clip picking; raise OLLAMA_NUM_CTX."
+        )
+    windows: list[list[Segment]] = []
+    i = 0
+    while i < len(segs):
+        window: list[Segment] = []
+        used = 0
+        j = i
+        while j < len(segs):
+            cost = estimate_tokens(format_transcript(t, host_speaker, [segs[j]])) + 1
+            if window and used + cost > budget_tokens:
+                break
+            window.append(segs[j])
+            used += cost
+            j += 1
+        windows.append(window)
+        if j >= len(segs):
+            break
+        # Step back so the next window starts ~WINDOW_OVERLAP_SECONDS before this one ended.
+        overlap_from = window[-1].end - WINDOW_OVERLAP_SECONDS
+        k = j
+        while k - 1 > i + 1 and segs[k - 1].start > overlap_from:
+            k -= 1
+        i = k
+    return windows
+
+
+def _ask(
+    provider: LLMProvider,
+    system: str,
+    user: str,
+    log: Logger,
+    max_retries: int,
+    label: str,
+) -> tuple[PickOutput, int, str]:
+    errors: list[str] = []
+    for attempt in range(1, max_retries + 2):
+        log(f"Asking {provider.name}:{provider.model} for clips ({label}, attempt {attempt})")
+        try:
+            text = provider.complete_json(
+                system, user, OUTPUT_SCHEMA, log, max_output_tokens=PICKER_OUTPUT_TOKENS
+            )
+        except LLMError as e:
+            # Unavailable/out-of-memory/etc.: retrying the same call won't help.
+            raise PickerError(str(e)) from e
+        try:
+            return _parse(text), attempt, text
+        except (ValidationError, ValueError) as e:
+            err = str(e).splitlines()[0] if str(e) else type(e).__name__
+            errors.append(f"attempt {attempt}: {err}")
+            log(f"Picker output failed validation: {err}")
+    raise PickerError(
+        f"Clip picker returned invalid JSON every time ({label}): " + "; ".join(errors)
+    )
+
+
 def pick_clips(
     t: Transcript,
     host_speaker: str | None,
-    client: PickerClient,
+    provider: LLMProvider,
     log: Logger,
     n: int = 8,
     style: dict | None = None,
     prompt_version: str = "v1",
     max_retries: int = 2,
+    extra_context: str = "",
 ) -> PickResult:
     style = style or {}
     system = load_prompt(prompt_version)
-    user = build_user_message(t, host_speaker, n, style)
-    errors: list[str] = []
-    for attempt in range(1, max_retries + 2):
-        log(f"Asking the clip picker (prompt {prompt_version}, attempt {attempt})")
-        text = client.complete(system, user, log)
-        try:
-            out = _parse(text)
-        except (ValidationError, ValueError) as e:
-            err = str(e).splitlines()[0] if str(e) else type(e).__name__
-            errors.append(f"attempt {attempt}: {err}")
-            log(f"Picker output failed validation: {err}")
-            continue
-        clips, rejected = apply_rules(
-            out.clips,
-            t,
-            n,
-            min_s=style.get("min_clip_seconds", 18.0),
-            max_s=style.get("max_clip_seconds", HARD_MAX_SECONDS),
+    budget = None
+    if provider.context_tokens:
+        header = build_user_message(t, host_speaker, n, style, [], extra_context)
+        budget = (
+            provider.context_tokens
+            - PICKER_OUTPUT_TOKENS
+            - estimate_tokens(system)
+            - estimate_tokens(header)
+            - 200
         )
-        for r in rejected:
-            log(f"Rejected model clip #{r['model_rank']}: {r['reason']}")
-        return PickResult(clips=clips, rejected=rejected, attempts=attempt, raw=text)
-    raise PickerError("Clip picker returned invalid JSON every time: " + "; ".join(errors))
+    windows = plan_windows(t, host_speaker, budget)
+    if len(windows) > 1:
+        log(
+            f"Transcript is longer than the model's {provider.context_tokens}-token context; "
+            f"picking in {len(windows)} overlapping parts"
+        )
+    plans: list[ClipPlan] = []
+    attempts = 0
+    raws: list[str] = []
+    for w_i, segs in enumerate(windows, 1):
+        user = build_user_message(
+            t, host_speaker, n, style, segs if len(windows) > 1 else None, extra_context
+        )
+        label = f"part {w_i}/{len(windows)}"
+        out, used, raw = _ask(provider, system, user, log, max_retries, label)
+        attempts = max(attempts, used)
+        raws.append(raw)
+        if len(windows) > 1:
+            lo, hi = segs[0].start - 0.5, segs[-1].end + 0.5
+            out_of_part = [
+                c for c in out.clips if c.start < lo or max(s.end for s in c.segments) > hi
+            ]
+            for _ in out_of_part:
+                log(f"Part {w_i}: dropped a clip outside this part's time range")
+            plans.extend(c for c in out.clips if c not in out_of_part)
+        else:
+            plans.extend(out.clips)
+    if len(windows) > 1:
+        # Parts were ranked separately; rank the union by score (stable: earlier parts win ties).
+        plans.sort(key=lambda c: -c.virality_score)
+    clips, rejected = apply_rules(
+        plans,
+        t,
+        n,
+        min_s=style.get("min_clip_seconds", 18.0),
+        max_s=style.get("max_clip_seconds", HARD_MAX_SECONDS),
+    )
+    for r in rejected:
+        log(f"Rejected model clip #{r['model_rank']}: {r['reason']}")
+    return PickResult(
+        clips=clips,
+        rejected=rejected,
+        attempts=attempts,
+        raw="\n".join(raws),
+        provider=provider.name,
+        model=provider.model,
+        real=provider.real,
+        windows=len(windows),
+    )
 
 
 def pick_qa(result: PickResult, n: int, transcript: Transcript) -> QAReport:
     qa = QAReport(step="pick")
-    if transcript.fake:
-        qa.check("real clip picking", False, "FAKE_MODELS stub: plumbing test only")
+    if transcript.fake or not result.real:
+        qa.check("real clip picking", False, "FAKE_MODELS test double: plumbing test only")
     qa.check(
         "output matched the schema",
         True,
-        f"after {result.attempts} attempt(s)",
+        f"{result.provider}:{result.model}, after {result.attempts} attempt(s)"
+        + (f", {result.windows} transcript parts" if result.windows > 1 else ""),
     )
     qa.check(
         "no clip over the 30 s hard max",

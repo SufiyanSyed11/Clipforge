@@ -15,6 +15,9 @@ Source of truth for the full spec: `docs/SPEC.md`. Architecture and phased plan:
 - Host is auto-suggested, owner confirms/changes with one click per project.
 - 30 fps sources go to 60 fps by frame repetition; frame interpolation only if enabled.
 - Brand tag default `#DoubleCoverage`; logo uploaded in Settings.
+- Free local AI by default: Ollama + `qwen3:4b` for clip picking/queries/copy. Anthropic is an
+  optional provider only; never require an API key for normal operation. Test doubles stay
+  separate and are always labelled as not real.
 - Never invent test results. The quality bar is passed only after the owner's 3 golden
   episodes actually ran. A phase is complete only when its acceptance criteria pass.
 - B-roll restrictions are Settings with the spec defaults, applied to every selection and

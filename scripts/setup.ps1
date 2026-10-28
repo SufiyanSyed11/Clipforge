@@ -40,7 +40,22 @@ Push-Location web
 try { Invoke-Step "Install web app" { npm install } } finally { Pop-Location }
 if (-not (Test-Path .env)) {
     Copy-Item .env.example .env
-    Write-Host "Created .env from .env.example (add your ANTHROPIC_API_KEY there)"
+    Write-Host "Created .env from .env.example (no API key needed for the default local model)"
 }
+# Local clip-picking model (free). Only one model is downloaded.
+$model = "qwen3:4b"
+if (Get-Command ollama -ErrorAction SilentlyContinue) {
+    $ErrorActionPreference = "Continue"
+    $installed = (& ollama list 2>$null | Out-String)
+    $ErrorActionPreference = "Stop"
+    if ($installed -notmatch [regex]::Escape($model)) {
+        $answer = Read-Host "Download the local clip-picking model $model now (~2.5 GB)? [y/N]"
+        if ($answer -match '^[yY]') { Invoke-Step "Download $model" { ollama pull $model } }
+        else { Write-Host "Skipped. Run later: ollama pull $model" }
+    } else { Write-Host "Ollama model $model is already downloaded" }
+} else {
+    Write-Host "Ollama not found. Install it from https://ollama.com/download, then run: ollama pull $model"
+}
+
 Invoke-Step "Check this PC" { .\.venv\Scripts\clipforge-check.exe }
 Write-Host "Setup done. Start the app with: powershell -ExecutionPolicy Bypass -File scripts\dev.ps1"

@@ -2,7 +2,7 @@
 compare them side by side.
 
     clipforge-picker-harness data/projects/00001/transcript.json --prompts v1 v2 --host S1
-    clipforge-picker-harness transcript.json --compare runs/v1.json runs/v2.json   # no API call
+    clipforge-picker-harness transcript.json --compare runs/v1.json runs/v2.json   # no model call
 
 Writes one JSON per prompt version plus compare.md into --out.
 """
@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 
 from clipforge.core import pick
+from clipforge.llm import LLMProvider, get_text_provider
+from clipforge.llm.doubles import FakeLLM
 from clipforge.models import Transcript
 from clipforge.settings import get_settings
 
@@ -25,17 +27,19 @@ def run_version(
     version: str,
     host: str | None,
     n: int,
-    client: pick.PickerClient,
+    provider: LLMProvider,
 ) -> dict:
-    result = pick.pick_clips(
-        transcript, host, client, lambda m: print(f"  [{version}] {m}"), n=n, prompt_version=version
-    )
+    def log(m: str) -> None:
+        print(f"  [{version}] {m}")
+
+    result = pick.pick_clips(transcript, host, provider, log, n=n, prompt_version=version)
     qa = pick.pick_qa(result, n, transcript)
     return {
         "prompt_version": version,
         "host_speaker": host,
         "n": n,
-        "fake": transcript.fake or isinstance(client, pick.FakePickerClient),
+        "fake": transcript.fake or not result.real,
+        "provider": f"{result.provider}:{result.model}",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "clips": [c.model_dump() for c in result.clips],
         "rejected": result.rejected,
@@ -95,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-n", type=int, default=8)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--compare", nargs="+", type=Path, help="compare saved run JSONs only")
-    ap.add_argument("--fake", action="store_true", help="use the stub picker (plumbing test)")
+    ap.add_argument("--fake", action="store_true", help="use the test double (plumbing test only)")
     args = ap.parse_args(argv)
 
     out = args.out or Path("data/harness") / datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -104,21 +108,15 @@ def main(argv: list[str] | None = None) -> int:
         runs = [json.loads(p.read_text(encoding="utf-8")) for p in args.compare]
     else:
         transcript = Transcript.model_validate_json(args.transcript.read_text(encoding="utf-8"))
-        settings = get_settings()
+        provider = FakeLLM() if args.fake else get_text_provider(get_settings())
+        status = provider.check()
+        if not status.ok:
+            print(status.message(), file=sys.stderr)
+            return 1
         runs = []
         for version in args.prompts:
-            client = (
-                pick.FakePickerClient(transcript)
-                if args.fake
-                else pick.ClaudePickerClient(
-                    settings.picker_model,
-                    settings.picker_effort,
-                    settings.picker_fallbacks,
-                    api_key=settings.anthropic_api_key or None,
-                )
-            )
             try:
-                run = run_version(transcript, version, args.host, args.n, client)
+                run = run_version(transcript, version, args.host, args.n, provider)
             except pick.PickerError as e:
                 print(f"{version}: {e}", file=sys.stderr)
                 return 1

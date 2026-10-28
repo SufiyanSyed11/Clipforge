@@ -64,3 +64,19 @@ def test_main_writes_report(monkeypatch, capsys):
     assert loaded["defaults"]["whisper"]["device"] in ("cpu", "cuda")
     assert "ffmpeg" in loaded["tools"]
     assert isinstance(loaded["problems"], list)
+
+
+def test_rtx_3050_6gb_gets_int8_large_v3_and_12k_llm_context():
+    d = check_env.derive_defaults(
+        _base(
+            gpus=[{"name": "NVIDIA GeForce RTX 3050", "vram_gb": 6.0, "driver": "x"}],
+            ctranslate2_cuda_devices=1,
+        )
+    )
+    assert d["whisper"]["model"] == "large-v3"
+    assert d["whisper"]["compute_type"] == "int8_float16"
+    assert d["ollama_num_ctx"] == 12288
+
+
+def test_cpu_only_gets_smaller_llm_context():
+    assert check_env.derive_defaults(_base())["ollama_num_ctx"] == 8192

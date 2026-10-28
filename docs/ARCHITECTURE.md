@@ -14,6 +14,7 @@ the owner's review before the next one starts.
 | 4 | 60 fps | 30 fps sources are converted by **frame repetition** by default. Generating in-between frames is off and only runs if the owner explicitly enables it. |
 | 5 | Branding | Default brand tag `#DoubleCoverage`. The logo is uploaded and changed in Settings. |
 | 6 | Test podcasts | The owner supplies three episodes through the golden-sample workflow. **No test result is invented, and the quality bar is never reported as passed until those episodes have actually been run.** |
+| 8 | AI provider | Clip picking, B-roll queries and copy use a **free local model by default: Ollama + `qwen3:4b`**, configurable in `.env`. The provider layer is modular (`clipforge/llm/`); Anthropic is optional only. No API key is needed for normal operation. Test doubles are separate (`llm/doubles.py`) and only active with `FAKE_MODELS=true`. Jobs check the provider before starting. B-roll vision checking is off by default (owner approves contact sheets); a local vision model is an optional extra download. |
 | 7 | B-roll restrictions | The spec's restrictions stay the default but are editable in Settings. They apply to every B-roll selection and are re-verified on the selected footage before export. |
 
 ## 1. Runtime design: Windows-first, no Docker required
@@ -115,8 +116,8 @@ Clipforge/
 |---|---|---|
 | Python | 3.11+ in a venv | faster-whisper / CTranslate2 wheels on Windows. |
 | Transcription | faster-whisper with word timestamps + VAD; model/device from `clipforge-check` | As in the spec, adapted to the owner's hardware. |
-| Clip picker | Claude API (`anthropic` SDK), model `claude-opus-5-5`, adaptive thinking, structured JSON output via a JSON schema, then pydantic validation and the hard rules enforced in code (30 s max, 18-30 s target, never pad) | "Strict JSON" made enforceable; the model can't push an over-long clip through. |
-| Refusal fallback | Server-side fallback (`fallbacks: "default"`) on by default, `PICKER_FALLBACKS=off` disables it | Recommended for this model; a declined request is re-run instead of failing the job. |
+| Clip picker | Provider layer: **Ollama `qwen3:4b` (default, local, free)** with the JSON schema as Ollama's `format` (constrained decoding), thinking off, context sized to the GPU, long transcripts picked in overlapping windows; optional Anthropic (`claude-opus-5-5`, structured output). Either way: pydantic validation with retries, then the hard rules enforced in code (30 s max, 18-30 s target, never pad) | "Strict JSON" made enforceable whatever the model; the model can't push an over-long clip through. |
+| VRAM on 6 GB | Ollama is asked to unload before GPU transcription; Whisper `large-v3` int8 on 6 GB; LLM context 12k | Whisper and the LLM never need the GPU at the same time. |
 | Cut engine (Phase 2) | numpy RMS on 48 kHz mono PCM, 10 ms hop; ffmpeg for cuts | Deterministic and testable. |
 | Faces (Phase 3) | MediaPipe + PySceneDetect | Runs on CPU on Windows. |
 | Captions (Phase 3) | ASS subtitles burned in by ffmpeg/libass | Remotion only if this falls short. |
@@ -164,7 +165,7 @@ workflow. No rendering.
 | P1-7 | Picker harness: runs any prompt version on any saved transcript and writes a side-by-side comparison | pytest + CLI run |
 | P1-8 | UI: new project (link or file + rights box) → live log → host confirm → ranked clip list with score, reasons, hook/payoff, titles, risk flags, QA checklist | Playwright (pipeline plumbing run, models stubbed and labelled as such) |
 | P1-9 **[owner PC]** | Real transcription with faster-whisper on the owner's hardware | Owner runs the golden workflow |
-| P1-10 **[owner PC]** | Real clip picking with the Claude API key | Owner runs the golden workflow |
+| P1-10 **[owner PC]** | Real clip picking with the local model (Ollama + qwen3:4b) | Owner runs the golden workflow |
 | P1-11 **[owner PC]** | Golden run on the owner's 3 episodes: transcripts, picked clips and QA reports written to `docs/reports/phase-1/`, then reviewed for what is weak | `clipforge-golden run` |
 
 ### Phase 2: Cut-point engine and verification gate (highest priority)
@@ -193,5 +194,5 @@ queue) behind the interfaces from section 1.
 - **Stock B-roll rarely matches specific real events.** WEAK flags + the swap screen are the
   real answer.
 - **CPU-only transcription** works but is slow on long episodes.
-- **The build sandbox can't reach Hugging Face or YouTube and has no Claude API key**, so real
+- **The build sandbox can't reach Hugging Face or YouTube and has no Ollama model**, so real
   transcription, real downloads and real clip picking are verified only on the owner's PC.

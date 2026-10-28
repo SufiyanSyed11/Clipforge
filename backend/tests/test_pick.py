@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+import re
 
 import pytest
 
 from clipforge.core import pick
+from clipforge.llm.base import LLMError
+from clipforge.llm.doubles import FakeLLM
 from clipforge.models import Segment, Transcript, Word
 
 
@@ -49,15 +51,28 @@ def _clip(segments, score=8, risk=None):
 
 
 class Scripted:
-    """Returns pre-recorded model outputs in order."""
+    """Test double provider: returns pre-recorded model outputs in order."""
 
-    def __init__(self, *outputs: str):
+    name = "scripted"
+    model = "recorded"
+    real = True  # behaves like a real provider for the rules under test
+    context_tokens = None
+
+    def __init__(self, *outputs: str, context_tokens: int | None = None):
         self.outputs = list(outputs)
         self.calls: list[tuple[str, str]] = []
+        self.context_tokens = context_tokens
 
-    def complete(self, system, user, log):
+    def check(self):
+        raise AssertionError("pick_clips must not need check(); tasks call it")
+
+    def complete_json(self, system, user, schema, log, *, max_output_tokens=4096, images=None):
+        assert schema is pick.OUTPUT_SCHEMA
         self.calls.append((system, user))
-        return self.outputs.pop(0)
+        out = self.outputs.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
 
 
 def _run(client, n=8, t=None):
@@ -168,90 +183,62 @@ def test_bad_opener_is_flagged():
     assert any('opens on "and"' in f for f in res.clips[0].flags)
 
 
-def test_fake_client_marks_qa_as_not_real():
-    t = _transcript().model_copy(update={"fake": True})
-    res = pick.pick_clips(t, "S1", pick.FakePickerClient(t), lambda m: None, n=3)
+def test_test_double_marks_qa_as_not_real():
+    t = _transcript()
+    res = pick.pick_clips(t, "S1", FakeLLM(), lambda m: None, n=3)
     assert 0 < len(res.clips) <= 3
+    assert res.real is False and res.provider == "fake"
     qa = pick.pick_qa(res, 3, t)
     assert not qa.passed and qa.failures[0].name == "real clip picking"
 
 
-# ---- the real SDK call path, against a stand-in client object ------------------------------
+def test_provider_errors_fail_without_retrying():
+    client = Scripted(LLMError("Ollama isn't reachable"), json.dumps({"clips": []}))
+    with pytest.raises(pick.PickerError, match="isn't reachable"):
+        _run(client)
+    assert len(client.calls) == 1
 
 
-class _Stream:
-    def __init__(self, msg):
-        self.msg = msg
+def test_long_transcript_is_picked_in_overlapping_parts_that_fit_the_context():
+    t = _transcript(1200)  # 20 minutes
+    whole = len(pick.format_transcript(t, "S1")) // 3
+    ctx = pick.PICKER_OUTPUT_TOKENS + 3000  # far smaller than the whole transcript
+    assert whole > 3000
+    windows = pick.plan_windows(t, "S1", 2000)
+    assert len(windows) > 1
+    covered = {s.start for w in windows for s in w}
+    assert covered == {s.start for s in t.segments}  # nothing dropped
+    for a, b in zip(windows, windows[1:], strict=False):
+        assert b[0].start < a[-1].end  # neighbours overlap
+        assert a[-1].end - b[0].start <= pick.WINDOW_OVERLAP_SECONDS + 10
+    # One answer per part: later parts propose stronger clips, and part 1 also proposes a clip
+    # outside its own time range (dropped).
+    ranges = []
 
-    def __enter__(self):
-        return self
+    class Recorder(Scripted):
+        def complete_json(self, system, user, schema, log, **kw):
+            assert len(system) // 3 + len(user) // 3 + kw["max_output_tokens"] <= ctx
+            times = [float(x) for x in re.findall(r"^\[(\d+\.\d+)-", user, re.M)]
+            lo = min(times)
+            ranges.append(lo)
+            i = len(ranges)
+            clips = [_clip([(lo + 1, lo + 21)], score=5 + i)]
+            if i == 1:
+                clips.append(_clip([(1100, 1120)], score=9))  # not in part 1
+            return json.dumps({"clips": clips})
 
-    def __exit__(self, *a):
-        return False
-
-    def get_final_message(self):
-        return self.msg
-
-
-def _sdk_client(msg, record):
-    def stream(**kw):
-        record.append(kw)
-        return _Stream(msg)
-
-    return SimpleNamespace(
-        messages=SimpleNamespace(stream=stream),
-        beta=SimpleNamespace(messages=SimpleNamespace(stream=stream)),
-    )
-
-
-def _msg(text, stop="end_turn", model="claude-opus-5-5"):
-    return SimpleNamespace(
-        stop_reason=stop,
-        stop_details=None,
-        model=model,
-        content=[
-            SimpleNamespace(type="thinking", thinking=""),
-            SimpleNamespace(type="text", text=text),
-        ],
-    )
-
-
-def test_claude_client_request_shape():
-    calls: list[dict] = []
-    c = pick.ClaudePickerClient(
-        "claude-opus-5-5", "high", "default", client=_sdk_client(_msg('{"clips": []}'), calls)
-    )
-    assert c.complete("sys", "user", lambda m: None) == '{"clips": []}'
-    kw = calls[0]
-    assert kw["model"] == "claude-opus-5-5"
-    assert kw["thinking"] == {"type": "adaptive"}
-    assert kw["output_config"]["effort"] == "high"
-    assert kw["output_config"]["format"]["type"] == "json_schema"
-    assert kw["fallbacks"] == "default"
-    assert kw["betas"] == ["server-side-fallback-2026-07-01"]
-    assert "temperature" not in kw
-
-    calls.clear()
-    pick.ClaudePickerClient(
-        "claude-opus-5-5", fallbacks="off", client=_sdk_client(_msg("{}"), calls)
-    ).complete("s", "u", lambda m: None)
-    assert "fallbacks" not in calls[0] and "betas" not in calls[0]
+    rec = Recorder(context_tokens=ctx)
+    res = pick.pick_clips(t, "S1", rec, lambda m: None, n=8)
+    assert res.windows == len(ranges) > 1
+    scores = [c.plan.virality_score for c in res.clips]
+    assert scores == sorted(scores, reverse=True)
+    assert all(c.duration <= 30 for c in res.clips)
+    assert not any(c.plan.start >= 1100 for c in res.clips)
 
 
-@pytest.mark.parametrize(("stop", "match"), [("refusal", "declined"), ("max_tokens", "cut off")])
-def test_claude_client_stop_reasons_fail_loudly(stop, match):
-    c = pick.ClaudePickerClient("m", client=_sdk_client(_msg("", stop=stop), []))
-    with pytest.raises(pick.PickerError, match=match):
-        c.complete("s", "u", lambda m: None)
-
-
-def test_claude_client_logs_fallback_model():
-    logs: list[str] = []
-    c = pick.ClaudePickerClient(
-        "claude-opus-5-5", client=_sdk_client(_msg("{}", model="other-model"), [])
-    )
-    c.complete("s", "u", logs.append)
-    assert any("fallback model other-model" in m for m in logs)
+def test_too_small_context_fails_clearly():
+    with pytest.raises(pick.PickerError, match="OLLAMA_NUM_CTX"):
+        _run(Scripted(context_tokens=pick.PICKER_OUTPUT_TOKENS + 900), t=_transcript(1200))
 
 
 def test_output_schema_is_strict():

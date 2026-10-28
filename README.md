@@ -18,7 +18,33 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # once
 powershell -ExecutionPolicy Bypass -File scripts\dev.ps1     # every time
 ```
 
-Open http://localhost:3000. Put your Claude API key in `.env` (`ANTHROPIC_API_KEY=`).
+Open http://localhost:3000.
+
+### Local AI model (free, no API key)
+
+Clips are picked by a local model through [Ollama](https://ollama.com). Nothing is sent to a
+paid service and no API key is needed.
+
+1. Install Ollama for Windows from https://ollama.com/download (it runs in the tray and
+   listens on `http://127.0.0.1:11434`).
+2. Download the one model ClipForge needs (~2.5 GB):
+
+   ```powershell
+   ollama pull qwen3:4b
+   ```
+
+3. Check it: `.\.venv\Scripts\clipforge-check.exe` should print `Clip picker: OK`, and the
+   System page shows "AI models: ready".
+
+`setup.ps1` offers to run step 2 for you if Ollama is installed. Jobs check that Ollama is
+running and the model is downloaded before they start, and stop with a clear message if not.
+
+On a 6 GB GPU (RTX 3050) the defaults are: Whisper `large-v3` in int8 and a 12k-token LLM
+context; Ollama is asked to unload its model before transcription so the two never compete
+for VRAM. Long episodes are picked in overlapping parts that fit the context.
+
+To use a different local model: `ollama pull <model>` and set `OLLAMA_MODEL=<model>` in
+`.env`. To use Claude instead (paid): set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`.
 
 `clipforge-check` (run by both scripts) inspects the PC and picks the Whisper model and device:
 a usable NVIDIA GPU gets `large-v3` on CUDA, otherwise it runs on the CPU.

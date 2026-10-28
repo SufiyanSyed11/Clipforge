@@ -37,11 +37,27 @@ class Settings(BaseSettings):
     diarization_backend: str = "auto"
     hf_token: str = ""
 
-    # Clip picker
+    # Language model for clip picking, B-roll queries and copy. "ollama" (local, free) is the
+    # default; "anthropic" is optional and needs ANTHROPIC_API_KEY.
+    llm_provider: str = "ollama"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen3:4b"
+    # Context window in tokens. 0 = sized by clipforge-check for this GPU (12288 on 6 GB VRAM:
+    # qwen3:4b ~2.5 GB + KV cache fits with room to spare). Long transcripts are split into
+    # windows that fit.
+    ollama_num_ctx: int = 0
+    ollama_keep_alive: str = "2m"
+    ollama_timeout_seconds: float = 900.0
+    ollama_temperature: float = 0.2
+    # Vision model for checking B-roll contact sheets: none (manual approval) | ollama | anthropic
+    vision_provider: str = "none"
+    ollama_vision_model: str = "qwen2.5vl:3b"
+
     anthropic_api_key: str = ""
-    picker_model: str = "claude-opus-5-5"
-    picker_effort: str = "high"
-    picker_fallbacks: str = "default"  # "default" or "off"
+    anthropic_model: str = "claude-opus-5-5"
+    anthropic_effort: str = "high"
+    anthropic_fallbacks: str = "default"  # "default" or "off"
+
     picker_prompt_version: str = "v1"
     picker_max_retries: int = 2
 

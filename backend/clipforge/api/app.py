@@ -60,6 +60,18 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "No environment report yet. Run `clipforge-check`.")
         return report
 
+    @app.get("/api/llm/status")
+    def llm_status() -> dict[str, Any]:
+        """Which model picks clips, and is it ready? Never includes keys."""
+        from clipforge.llm import get_text_provider, get_vision_provider
+
+        try:
+            text = get_text_provider().check().to_dict()
+        except ValueError as e:
+            text = {"ok": False, "provider": settings.llm_provider, "detail": str(e)}
+        vision = get_vision_provider().check().to_dict()
+        return {"text": text, "vision": vision}
+
     @app.get("/api/settings")
     def get_app_settings() -> dict[str, Any]:
         return load_config().model_dump()

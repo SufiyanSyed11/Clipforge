@@ -136,7 +136,7 @@ def summary_markdown(results: list[dict], env: dict | None) -> str:
         "# Phase 1 golden run",
         "",
         f"Run at {datetime.now().isoformat(timespec='minutes')}. "
-        f"Picker model `{s.picker_model}`, prompt `{s.picker_prompt_version}`.",
+        f"Clip picker `{s.llm_provider}`, prompt `{s.picker_prompt_version}`.",
     ]
     if env:
         w = env["defaults"]["whisper"]

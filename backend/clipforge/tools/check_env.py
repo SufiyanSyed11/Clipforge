@@ -107,9 +107,14 @@ def derive_defaults(report: dict[str, Any]) -> dict[str, Any]:
     cuda_ok = (report["ctranslate2_cuda_devices"] or 0) > 0
     vram = max((g["vram_gb"] or 0) for g in gpus) if gpus else 0
     ram = report["ram_gb"] or 0
-    if gpus and cuda_ok and vram >= 6:
+    if gpus and cuda_ok and vram >= 8:
         whisper = {"model": "large-v3", "device": "cuda", "compute_type": "float16"}
         reason = f"NVIDIA GPU with {vram} GB VRAM and CUDA available to CTranslate2"
+    elif gpus and cuda_ok and vram >= 5.5:
+        # e.g. RTX 3050 6 GB: large-v3 in int8 (~2 GB) leaves headroom; float16 (~4.5 GB
+        # with activations) is too tight next to the desktop and a briefly-loaded local LLM.
+        whisper = {"model": "large-v3", "device": "cuda", "compute_type": "int8_float16"}
+        reason = f"NVIDIA GPU with {vram} GB VRAM: large-v3 in int8 to fit comfortably"
     elif gpus and cuda_ok:
         whisper = {"model": "medium", "device": "cuda", "compute_type": "int8_float16"}
         reason = f"NVIDIA GPU with only {vram} GB VRAM"
@@ -125,9 +130,18 @@ def derive_defaults(report: dict[str, Any]) -> dict[str, Any]:
         else:
             reason = f"No usable NVIDIA GPU; CPU with {ram} GB RAM"
     pyannote_ok = report["packages"].get("pyannote.audio") and report["hf_token_set"]
+    # Local LLM context: qwen3:4b (~2.5 GB) + KV cache (~0.14 MB/token at f16).
+    if gpus and vram >= 8:
+        num_ctx, ctx_reason = 16384, f"{vram} GB VRAM"
+    elif gpus and vram >= 5.5:
+        num_ctx, ctx_reason = 12288, f"{vram} GB VRAM: model + 12k context ≈ 4.3 GB"
+    else:
+        num_ctx, ctx_reason = 8192, "no usable GPU: smaller context keeps CPU inference practical"
     return {
         "whisper": {**whisper, "reason": reason},
         "diarization_backend": "pyannote" if pyannote_ok else "basic",
+        "ollama_num_ctx": num_ctx,
+        "ollama_num_ctx_reason": ctx_reason,
     }
 
 
@@ -169,6 +183,7 @@ def build_report() -> dict[str, Any]:
         ),
     }
     report["defaults"] = derive_defaults(report)
+    report["llm"] = _llm_status(settings, report["defaults"])
     report["problems"] = problems(report)
     return report
 
@@ -180,6 +195,16 @@ def _has_module(name: str) -> bool:
         return False
 
 
+def _llm_status(settings, defaults: dict[str, Any]) -> dict[str, Any]:
+    from clipforge.llm.factory import get_text_provider
+
+    try:
+        provider = get_text_provider(settings, num_ctx_default=defaults["ollama_num_ctx"])
+        return provider.check().to_dict()
+    except Exception as e:  # report, never crash the check
+        return {"ok": False, "provider": settings.llm_provider, "detail": str(e), "fix": None}
+
+
 def problems(report: dict[str, Any]) -> list[str]:
     out = []
     if not report["tools"]["ffmpeg"] or not report["tools"]["ffprobe"]:
@@ -188,8 +213,9 @@ def problems(report: dict[str, Any]) -> list[str]:
         out.append("faster-whisper not installed: pip install -e backend[pipeline]")
     if not report["packages"]["yt-dlp"] and not report["tools"]["yt-dlp"]:
         out.append("yt-dlp not installed (needed for URL ingest)")
-    if not report["anthropic_key_set"]:
-        out.append("ANTHROPIC_API_KEY not set (needed for clip picking)")
+    llm = report.get("llm") or {}
+    if llm and not llm.get("ok"):
+        out.append(f"Clip picker: {llm.get('detail')} {llm.get('fix') or ''}".strip())
     if report["disk_free_gb"] < 20:
         out.append(f"Only {report['disk_free_gb']} GB free disk; episodes + models need ~20 GB")
     return out
@@ -225,6 +251,9 @@ def main() -> None:
     w = d["whisper"]
     print(f"\nWhisper:     {w['model']} on {w['device']} ({w['compute_type']}) - {w['reason']}")
     print(f"Diarization: {d['diarization_backend']}")
+    llm = report["llm"]
+    print(f"Clip picker: {'OK' if llm['ok'] else 'NOT READY'} - {llm['detail']}")
+    print(f"LLM context: {d['ollama_num_ctx']} tokens ({d['ollama_num_ctx_reason']})")
     if report["problems"]:
         print("\nTo fix:")
         for p in report["problems"]:
